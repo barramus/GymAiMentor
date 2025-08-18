@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -8,47 +8,57 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from app.storage import save_user_data, load_user_data
-from bot.telegram_bot import handle_message, user_states  # user_states теперь импортируется явно
+
+from app.storage import load_user_data, save_user_data
+from bot.telegram_bot import handle_message, user_states, GOAL_KEYBOARD
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Кнопки целей
-keyboard = ReplyKeyboardMarkup(
-    [["🏋️‍♂️ Набрать массу", "🏃‍♂️ Похудеть", "🧘 Поддерживать форму"]],
-    resize_keyboard=True,
-    one_time_keyboard=True
-)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /start:
+    - сохраняем только name (если уже был), остальную анкету и историю очищаем;
+    - если name нет — спрашиваем имя и ставим mode='awaiting_name';
+    - если name есть — сразу просим выбрать цель с обращением по имени.
+    """
     if not update.message:
-        return  # безопасный выход
+        return
 
     user_id = str(update.effective_user.id)
-
-    # Полный сброс данных пользователя
     user_data = load_user_data(user_id)
+
+    physical = user_data.get("physical_data") or {}
+    name = physical.get("name")
+
+    user_data["physical_data"] = {"name": name}
     user_data["physical_data_completed"] = False
-    user_data["physical_data"] = {}
     user_data["history"] = []
     save_user_data(user_id, user_data)
 
-    # Очистка состояния диалога
     user_states.pop(user_id, None)
 
-    # Приветствие и кнопки цели
-    await update.message.reply_text(
-        "Привет! Я — твой персональный фитнес-ассистент 💪\n\nВыбери свою цель:",
-        reply_markup=keyboard
-    )
+    if not name:
+        user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
+        await update.message.reply_text("Как тебя зовут?")
+        return
+
+    await update.message.reply_text(f"{name}, выбери свою цель тренировок.", reply_markup=GOAL_KEYBOARD)
+
 
 def run_main():
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("Переменная окружения TELEGRAM_TOKEN не задана")
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Бот запущен.")
-    app.run_polling()
+
+    print("Бот запущен (polling).")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     run_main()

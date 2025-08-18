@@ -9,7 +9,9 @@ class FitnessAgent:
         self.user_id = user_id
         self.user_data = load_user_data(user_id)
 
-        physical_data = self.user_data.get("physical_data", {})
+        physical_data = self.user_data.get("physical_data", {}) or {}
+        self._user_name = (physical_data.get("name") or "").strip() or None
+
         physical_prompt = self._format_physical_data(physical_data)
 
         self.payload = Chat(
@@ -18,18 +20,15 @@ class FitnessAgent:
                     role=MessagesRole.SYSTEM,
                     content=(
                         "Ты — персональный ИИ-тренер. Общайся на 'ты'. "
-                        "На основе предоставленных пользователем данных,"
-                        "составь индивидуальную программу тренировок, строго на то количество дней, которое укажет пользователь,"
-                        "без уточняющих вопросов. Программа должна учитывать цели, физические параметры, ограничения и график."
+                        "На основе предоставленных пользователем данных составь индивидуальную программу тренировок "
+                        "строго на то количество дней, которое укажет пользователь, без уточняющих вопросов. "
+                        "Программа должна учитывать цели, физические параметры, ограничения и график."
                     )
                 ),
-                Messages(
-                    role=MessagesRole.USER,
-                    content=physical_prompt
-                )
+                Messages(role=MessagesRole.USER, content=physical_prompt),
             ],
             temperature=1.0,
-            max_tokens=2000
+            max_tokens=2000,
         )
 
     def _format_physical_data(self, data: dict) -> str:
@@ -45,10 +44,19 @@ class FitnessAgent:
             f"Уровень подготовки: {data.get('level', 'не указано')}"
         )
 
+    def _with_name_prefix(self, text: str) -> str:
+        """Добавляет обращение по имени только в пользовательский ответ агента."""
+        name = self._user_name
+        if not name:
+            return text
+        if text and text[0].isupper():
+            return f"{name}, {text[0].lower() + text[1:]}"
+        return f"{name}, {text}"
+
     async def get_response(self, user_input: str) -> str:
         from asyncio import to_thread
 
-        if user_input.strip():
+        if user_input and user_input.strip():
             self.payload.messages.append(Messages(role=MessagesRole.USER, content=user_input))
 
         def _chat_sync():
@@ -59,14 +67,14 @@ class FitnessAgent:
         message = await to_thread(_chat_sync)
         self.payload.messages.append(message)
 
-        # Обновляем историю
-        history = self.user_data.get("history", [])
-        if user_input.strip():
-            history.append(("🧍 " + user_input, "🤖 " + message.content))
-        else:
-            history.append(("🧍 Запрос программы", "🤖 " + message.content))
+        personalized = self._with_name_prefix(message.content)
 
+        history = self.user_data.get("history", [])
+        if user_input and user_input.strip():
+            history.append(("🧍 " + user_input, "🤖 " + personalized))
+        else:
+            history.append(("🧍 Запрос программы", "🤖 " + personalized))
         self.user_data["history"] = history
         save_user_data(self.user_id, self.user_data)
 
-        return message.content
+        return personalized
