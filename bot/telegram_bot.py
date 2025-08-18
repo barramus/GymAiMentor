@@ -99,7 +99,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state["data"]["gender"] = g
         user_states[user_id] = {
             "mode": "survey",
-            "step": 1,
+            "step": 2,
             "data": state["data"],
         }
         await update.message.reply_text(questions[0][1])
@@ -116,7 +116,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id] = {"mode": "survey", "step": state["step"] + 1, "data": state["data"]}
             await update.message.reply_text(next_text)
             return
-        
+
         physical_data = state["data"]
         user_states.pop(user_id, None)
 

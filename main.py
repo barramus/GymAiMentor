@@ -41,10 +41,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not name:
         user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
-        await update.message.reply_text("Как тебя зовут?")
+        await update.message.reply_text("Привет! Я твой персональный фитнес-тренер GymAiMentor💪🏼 Как тебя зовут?")
         return
 
-    await update.message.reply_text(f"{name}, выбери свою цель тренировок.", reply_markup=GOAL_KEYBOARD)
+    await update.message.reply_text(f"{name}, выбери свою цель тренировок ⬇️", reply_markup=GOAL_KEYBOARD)
 
 
 def run_main():
