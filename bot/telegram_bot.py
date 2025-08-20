@@ -1,6 +1,9 @@
 import os
+from typing import Optional
+
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
+
 from app.agent import FitnessAgent
 from app.storage import load_user_data, save_user_data
 
@@ -11,11 +14,13 @@ GOAL_MAPPING = {
     "🏋️‍♂️ Набрать массу": "набор массы",
     "🧘 Поддерживать форму": "поддержание формы",
 }
+
 GOAL_KEYBOARD = ReplyKeyboardMarkup(
     [["🏋️‍♂️ Набрать массу", "🏃‍♂️ Похудеть", "🧘 Поддерживать форму"]],
     resize_keyboard=True,
     one_time_keyboard=True,
 )
+
 START_KEYBOARD = ReplyKeyboardMarkup([["/start"]], resize_keyboard=True)
 
 questions = [
@@ -41,7 +46,8 @@ def _normalize_name(raw: str) -> str:
         name = name[:80]
     return name
 
-def normalize_gender(text: str) -> str | None:
+
+def normalize_gender(text: str) -> Optional[str]:
     t = (text or "").strip().lower()
     if "жен" in t or "👩" in t:
         return "женский"
@@ -49,8 +55,10 @@ def normalize_gender(text: str) -> str | None:
         return "мужской"
     return None
 
+
 async def _ask_goal_with_name(update: Update, name: str):
     await update.message.reply_text(f"{name}, выбери свою цель тренировок.", reply_markup=GOAL_KEYBOARD)
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Единый обработчик текстовых сообщений (без команд)."""
@@ -75,7 +83,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
         return
-
+    
     if state.get("mode") == "awaiting_name":
         if not text:
             await update.message.reply_text("Пожалуйста, напиши своё имя одним сообщением.")
@@ -112,21 +120,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if state["step"] <= len(questions):
             next_idx = state["step"] - 1
-            next_key, next_text = questions[next_idx]
+            _next_key, next_text = questions[next_idx]
             user_states[user_id] = {"mode": "survey", "step": state["step"] + 1, "data": state["data"]}
             await update.message.reply_text(next_text)
             return
-
-        physical_data = state["data"]
+        
+        finished_data = state["data"]
         user_states.pop(user_id, None)
 
-        user_data["physical_data"] = physical_data
+        base_physical = user_data.get("physical_data", {}) or {}
+        base_physical.update(finished_data)
+
+        user_data["physical_data"] = base_physical
         user_data["physical_data_completed"] = True
         user_data.setdefault("history", [])
         save_user_data(user_id, user_data)
 
+        await update.message.reply_text("Спасибо! Формирую твою персональную программу…")
+
         agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
-        response = await agent.get_response("Построй индивидуальную программу тренировок.")
+
+        try:
+            response = await agent.get_response("")
+        except Exception:
+            context.application.logger.exception("Ошибка генерации программы")
+            await update.message.reply_text(
+                "Сейчас не удалось сгенерировать программу. Попробуй ещё раз чуть позже.",
+                reply_markup=START_KEYBOARD,
+            )
+            return
 
         user_data["history"].append(("🧍 Запрос программы", "🤖 " + response))
         save_user_data(user_id, user_data)
