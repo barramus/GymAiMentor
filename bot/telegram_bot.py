@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 from app.agent import FitnessAgent
 from app.storage import load_user_data, save_user_data
 
+
 user_states: dict[str, dict] = {}
 
 GOAL_MAPPING = {
@@ -14,9 +15,22 @@ GOAL_MAPPING = {
     "🏋️‍♂️ Набрать массу": "набор массы",
     "🧘 Поддерживать форму": "поддержание формы",
 }
-
 GOAL_KEYBOARD = ReplyKeyboardMarkup(
     [["🏋️‍♂️ Набрать массу", "🏃‍♂️ Похудеть", "🧘 Поддерживать форму"]],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
+
+GENDER_CHOICES = ["👩 Женский", "👨 Мужской"]
+GENDER_KEYBOARD = ReplyKeyboardMarkup(
+    [GENDER_CHOICES],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
+
+LEVEL_CHOICES = ["🌱 Начинающий", "🔥 Опытный"]
+LEVEL_KEYBOARD = ReplyKeyboardMarkup(
+    [LEVEL_CHOICES],
     resize_keyboard=True,
     one_time_keyboard=True,
 )
@@ -30,15 +44,8 @@ questions = [
     ("goal", "Желаемый вес в килограммах?"),
     ("restrictions", "Есть ли ограничения по здоровью или предпочтения в тренировках?"),
     ("schedule", "Сколько раз в неделю можешь посещать тренажерный зал?"),
-    ("level", "Какой у тебя уровень подготовки? (начинающий/опытный)"),
 ]
 
-GENDER_CHOICES = ["👩 Женский", "👨 Мужской"]
-GENDER_KEYBOARD = ReplyKeyboardMarkup(
-    [GENDER_CHOICES],
-    resize_keyboard=True,
-    one_time_keyboard=True,
-)
 
 def _normalize_name(raw: str) -> str:
     name = (raw or "").strip()
@@ -59,9 +66,7 @@ def normalize_gender(text: str) -> Optional[str]:
 async def _ask_goal_with_name(update: Update, name: str):
     await update.message.reply_text(f"{name}, выбери свою цель тренировок.", reply_markup=GOAL_KEYBOARD)
 
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Единый обработчик текстовых сообщений (без команд)."""
     if not update.message:
         return
 
@@ -83,7 +88,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
         return
-    
+
     if state.get("mode") == "awaiting_name":
         if not text:
             await update.message.reply_text("Пожалуйста, напиши своё имя одним сообщением.")
@@ -97,7 +102,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_states[user_id] = {"mode": None, "step": 0, "data": {}}
         await _ask_goal_with_name(update, name)
         return
-
+    
     if state.get("mode") == "awaiting_gender":
         g = normalize_gender(text)
         if not g:
@@ -124,7 +129,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id] = {"mode": "survey", "step": state["step"] + 1, "data": state["data"]}
             await update.message.reply_text(next_text)
             return
-        
+
+        user_states[user_id] = {
+            "mode": "awaiting_level",
+            "step": 0,
+            "data": state["data"],
+        }
+        await update.message.reply_text("Выбери свой уровень подготовки:", reply_markup=LEVEL_KEYBOARD)
+        return
+
+    if state.get("mode") == "awaiting_level":
+        if text not in LEVEL_CHOICES:
+            await update.message.reply_text("Пожалуйста, выбери уровень кнопкой ниже:", reply_markup=LEVEL_KEYBOARD)
+            return
+
+        level = "начинающий" if "Начинающий" in text else "опытный"
+        state["data"]["level"] = level
+
         finished_data = state["data"]
         user_states.pop(user_id, None)
 
@@ -139,7 +160,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Спасибо! Формирую твою персональную программу…")
 
         agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
-
         try:
             response = await agent.get_response("")
         except Exception:
