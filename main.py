@@ -1,4 +1,5 @@
 import os
+import logging
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -10,7 +11,20 @@ from telegram.ext import (
 )
 
 from app.storage import load_user_data, save_user_data
-from bot.telegram_bot import handle_message, user_states, GOAL_KEYBOARD
+from bot.telegram_bot import (
+    handle_message,
+    user_states,
+    GOAL_KEYBOARD,
+    cmd_program,
+    cmd_reset,
+    cmd_edit,
+    cmd_export,
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -41,10 +55,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not name:
         user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
-        await update.message.reply_text("Привет! Я твой персональный фитнес-тренер GymAiMentor💪🏼 Как тебя зовут?")
+        await update.message.reply_text("Привет! Я твой персональный фитнес-тренер GymAiMentor 💪 Как тебя зовут?")
         return
 
     await update.message.reply_text(f"{name}, выбери свою цель тренировок ⬇️", reply_markup=GOAL_KEYBOARD)
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Краткая справка по доступным командам."""
+    text = (
+        "Доступные команды:\n"
+        "/start — начать заново (сохранит только имя)\n"
+        "/program — сгенерировать программу по текущей анкете\n"
+        "/reset — полностью сбросить анкету и историю\n"
+        "/edit age|weight|schedule — изменить одно поле анкеты\n"
+        "/export [md|pdf] — выгрузить последний план в файл\n"
+    )
+    await update.message.reply_text(text)
+
+
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Глобальный обработчик ошибок — пишет в лог, не падаем молча."""
+    logging.exception("Update %r caused error: %s", update, context.error)
 
 
 def run_main():
@@ -54,10 +86,18 @@ def run_main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("program", cmd_program))
+    app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("edit", cmd_edit))
+    app.add_handler(CommandHandler("export", cmd_export))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    app.add_error_handler(on_error)
+
     print("Бот запущен (polling).")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
