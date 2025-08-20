@@ -2,6 +2,19 @@ from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
 from app.storage import load_user_data, save_user_data
 
+import os
+import time
+from typing import Optional
+
+GIGACHAT_MODEL: str = os.getenv("GIGACHAT_MODEL", "GigaChat Max").strip()
+
+GIGACHAT_TEMPERATURE: float = float(os.getenv("GIGACHAT_TEMPERATURE", "0.2"))
+
+GIGACHAT_MAX_TOKENS: int = int(os.getenv("GIGACHAT_MAX_TOKENS", "2000"))
+
+GIGACHAT_TIMEOUT: int = int(os.getenv("GIGACHAT_TIMEOUT", "60"))
+
+GIGACHAT_RETRIES: int = int(os.getenv("GIGACHAT_RETRIES", "3"))
 
 class FitnessAgent:
     def __init__(self, token: str, user_id: str):
@@ -10,7 +23,7 @@ class FitnessAgent:
         self.user_data = load_user_data(user_id)
 
         physical_data = self.user_data.get("physical_data", {}) or {}
-        self._user_name = (physical_data.get("name") or "").strip() or None
+        self._user_name: Optional[str] = (physical_data.get("name") or "").strip() or None
 
         physical_prompt = self._format_physical_data(physical_data)
 
@@ -19,18 +32,19 @@ class FitnessAgent:
                 Messages(
                     role=MessagesRole.SYSTEM,
                     content=(
-                        "Представь, что ты — персональный фитнес-тренер с опытом активных и постоянных тренировок более 8 лет"
-                        "Ты опытный атлет, разбираешься в современном подходе эффективных и результативных тренировок"
+                        "Представь, что ты — персональный фитнес-тренер с опытом активных тренировок 8+ лет. "
+                        "Ты опытный атлет, используешь современные, эффективные методики. "
                         "Общайся с человеком на 'ты'. "
-                        "На основе предоставленных пользователем данных составь индивидуальную программу тренировок, на то количество дней, которые пользователь укажет в данных. "
-                        "Без уточняющих вопросов к пользователю. "
-                        "Программа должна учитывать цель, физические параметры, ограничения и сколько раз в неделю человек может посещать тренажерный зал."
-                    )
+                        "На основе предоставленных данных составь индивидуальную программу тренировок "
+                        "на то количество дней, которое указано в данных. Без уточняющих вопросов. "
+                        "Обязательно учитывай цель, физические параметры, ограничения и то, сколько раз в неделю "
+                        "человек может посещать тренажёрный зал."
+                    ),
                 ),
                 Messages(role=MessagesRole.USER, content=physical_prompt),
             ],
-            temperature=1.0,
-            max_tokens=2000,
+            temperature=GIGACHAT_TEMPERATURE,
+            max_tokens=GIGACHAT_MAX_TOKENS,
         )
 
     def _format_physical_data(self, data: dict) -> str:
@@ -62,13 +76,41 @@ class FitnessAgent:
             self.payload.messages.append(Messages(role=MessagesRole.USER, content=user_input))
 
         def _chat_sync():
-            with GigaChat(credentials=self.token, verify_ssl_certs=False) as giga:
-                response = giga.chat(self.payload)
-                return response.choices[0].message
+            """
+            Синхронный вызов GigaChat c ретраями.
+            Совместим с разными версиями SDK: пробуем задать модель в конструкторе клиента;
+            если сигнатура не поддерживает — передаём model в giga.chat(...).
+            """
+            last_err = None
+            for attempt in range(1, GIGACHAT_RETRIES + 1):
+                try:
+                    try:
+                        with GigaChat(
+                            credentials=self.token,
+                            verify_ssl_certs=False,
+                            timeout=GIGACHAT_TIMEOUT,
+                            model=GIGACHAT_MODEL,
+                        ) as giga:
+                            response = giga.chat(self.payload)
+                            return response.choices[0].message
+                    except TypeError:
+                        with GigaChat(
+                            credentials=self.token,
+                            verify_ssl_certs=False,
+                            timeout=GIGACHAT_TIMEOUT,
+                        ) as giga:
+                            response = getattr(giga, "chat")(self.payload, model=GIGACHAT_MODEL)
+                            return response.choices[0].message
+                except Exception as e:
+                    last_err = e
+                    if attempt == GIGACHAT_RETRIES:
+                        raise
+                    time.sleep(2 * attempt)
+            raise last_err or RuntimeError("GigaChat call failed")
 
         message = await to_thread(_chat_sync)
-        self.payload.messages.append(message)
 
+        self.payload.messages.append(message)
         personalized = self._with_name_prefix(message.content)
 
         history = self.user_data.get("history", [])
