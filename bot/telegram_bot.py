@@ -1,14 +1,22 @@
 import os
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime
+from pathlib import Path
 
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ContextTypes, CallbackQueryHandler
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+)
+from telegram.ext import ContextTypes
 
 from app.agent import FitnessAgent
 from app.storage import load_user_data, save_user_data
 
-user_states: dict[str, dict] = {}
+
+user_states: Dict[str, Dict[str, Any]] = {}
 
 GOAL_MAPPING = {
     "🏃‍♂️ Похудеть": "похудение",
@@ -35,12 +43,7 @@ LEVEL_KEYBOARD = ReplyKeyboardMarkup(
     one_time_keyboard=True,
 )
 
-START_KEYBOARD = ReplyKeyboardMarkup([["/start"]], resize_keyboard=True)
-
-SAVE_PLAN_KB = InlineKeyboardMarkup([[
-    InlineKeyboardButton("💾 Сохранить план", callback_data="save_plan"),
-    InlineKeyboardButton("⛔️ Не сохранять", callback_data="discard_plan"),
-]])
+START_KEYBOARD = ReplyKeyboardMarkup([["/start", "/program", "/reset"]], resize_keyboard=True)
 
 questions = [
     ("age", "Сколько тебе лет?"),
@@ -51,11 +54,13 @@ questions = [
     ("schedule", "Сколько раз в неделю можешь посещать тренажерный зал?"),
 ]
 
+
 def _normalize_name(raw: str) -> str:
     name = (raw or "").strip()
     if len(name) > 80:
         name = name[:80]
     return name
+
 
 def normalize_gender(text: str) -> Optional[str]:
     t = (text or "").strip().lower()
@@ -65,8 +70,50 @@ def normalize_gender(text: str) -> Optional[str]:
         return "мужской"
     return None
 
+
 async def _ask_goal_with_name(update: Update, name: str):
-    await update.message.reply_text(f"{name}, выбери свою цель тренировок.", reply_markup=GOAL_KEYBOARD)
+    await update.message.reply_text(f"{name}, выбери свою цель тренировок ⬇️", reply_markup=GOAL_KEYBOARD)
+
+
+def build_program_actions_keyboard(saved: bool = False) -> InlineKeyboardMarkup:
+    if saved:
+        row1 = [InlineKeyboardButton("✅ Сохранено", callback_data="noop")]
+    else:
+        row1 = [InlineKeyboardButton("💾 Сохранить", callback_data="program:save")]
+    row2 = [
+        InlineKeyboardButton("🧾 Экспорт PDF", callback_data="program:export:pdf"),
+        InlineKeyboardButton("📄 Экспорт MD", callback_data="program:export:md"),
+    ]
+    return InlineKeyboardMarkup([row1, row2])
+
+
+def _ensure_dirs(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _export_md(user_id: str, text: str) -> Path:
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = Path(f"data/exports/{user_id}/program-{ts}.md")
+    _ensure_dirs(path)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _export_pdf(user_id: str, text: str) -> Path:
+    from reportlab.platypus import SimpleDocTemplate, Preformatted, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.pagesizes import A4
+
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = Path(f"data/exports/{user_id}/program-{ts}.pdf")
+    _ensure_dirs(path)
+
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(str(path), pagesize=A4)
+    story = [Preformatted(text, styles["Code"]), Spacer(1, 12)]
+    doc.build(story)
+    return path
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -172,11 +219,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Сохраним план как «последний» и предложим кнопки сохранить/отменить
-        user_data["last_program"] = response
+        user_data = load_user_data(user_id)
+        user_data["last_program_text"] = response
+        user_data.setdefault("history", []).append(("🧍 Запрос программы", "🤖 " + response))
         save_user_data(user_id, user_data)
 
-        await update.message.reply_text(response, reply_markup=SAVE_PLAN_KB)
+        await update.message.reply_text(response, reply_markup=build_program_actions_keyboard(saved=False))
         return
 
     agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
@@ -187,41 +235,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(reply)
 
-async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.callback_query:
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    user_id = str(update.effective_user.id)
+    chat_id = update.effective_chat.id
+    user_data = load_user_data(user_id)
+    text = user_data.get("last_program_text")
+
+    data = (query.data or "").strip()
+
+    if data == "noop":
         return
 
-    cq = update.callback_query
-    data = cq.data
-    user_id = str(update.effective_user.id)
-    user_data = load_user_data(user_id)
-
-    if data == "save_plan":
-        plan = (user_data.get("last_program") or "").strip()
-        if not plan:
-            await cq.answer("Нечего сохранять", show_alert=True)
+    if data == "program:save":
+        if not text:
+            await query.edit_message_reply_markup(reply_markup=build_program_actions_keyboard(saved=False))
+            await context.bot.send_message(chat_id, "Нет сгенерированной программы для сохранения.")
             return
-        programs = user_data.get("programs", [])
-        programs.append({
-            "ts": datetime.utcnow().isoformat(timespec="seconds"),
-            "text": plan,
-        })
+
+        programs = user_data.get("programs") or []
+        programs.append({"ts": datetime.now().isoformat(timespec="seconds"), "text": text})
         user_data["programs"] = programs
         save_user_data(user_id, user_data)
-        await cq.answer("Сохранено")
-        try:
-            await cq.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        await cq.message.reply_text("Готово! План сохранён. Для экспорта используй /export md или /export pdf.")
+
+        await query.edit_message_reply_markup(reply_markup=build_program_actions_keyboard(saved=True))
+        await context.bot.send_message(chat_id, "Программа сохранена ✅")
         return
 
-    if data == "discard_plan":
-        user_data["last_program"] = ""
-        save_user_data(user_id, user_data)
-        await cq.answer("Ок, не сохраняем")
-        try:
-            await cq.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+    if data == "program:export:md":
+        if not text:
+            await context.bot.send_message(chat_id, "Пока нечего экспортировать.")
+            return
+        path = _export_md(user_id, text)
+        with path.open("rb") as f:
+            await context.bot.send_document(chat_id, document=InputFile(f, filename=path.name))
+        return
+
+    if data == "program:export:pdf":
+        if not text:
+            await context.bot.send_message(chat_id, "Пока нечего экспортировать.")
+            return
+        path = _export_pdf(user_id, text)
+        with path.open("rb") as f:
+            await context.bot.send_document(chat_id, document=InputFile(f, filename=path.name))
         return

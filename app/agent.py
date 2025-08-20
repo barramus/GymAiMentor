@@ -13,10 +13,23 @@ GIGACHAT_MAX_TOKENS: int = int(os.getenv("GIGACHAT_MAX_TOKENS", "2000"))
 GIGACHAT_TIMEOUT: int = int(os.getenv("GIGACHAT_TIMEOUT", "60"))
 GIGACHAT_RETRIES: int = int(os.getenv("GIGACHAT_RETRIES", "3"))
 
-_RPE_CHUNK = re.compile(r'[,;\s]*RPE\s*=?\s*[\d.,\-–—]+', re.IGNORECASE)
-_RIR_CHUNK = re.compile(r'[,;\s]*RIR\s*=?\s*[\d.,\-–—]+', re.IGNORECASE)
-_EMPTY_PARENS = re.compile(r'\(\s*\)')
-_FIX_COMMAs = re.compile(r'\s*,\s*,')  # двойные запятые
+_RPE_PATTERNS = [
+    r"\(?\s*RPE\s*=?\s*\d+(?:\s*-\s*\d+)?\s*\)?",
+    r"\(?\s*RIR\s*=?\s*\d+(?:\s*-\s*\d+)?\s*\)?",
+    r"\bдо\s+отказа\b",
+    r"\bпочти\s+до\s+отказа\b",
+]
+
+def _strip_rpe(text: str) -> str:
+    out = text
+    for p in _RPE_PATTERNS:
+        out = re.sub(p, "", out, flags=re.IGNORECASE)
+    # убрать лишние пробелы и двойные запятые/скобки после вырезания
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"\(\s*\)", "", out)
+    out = re.sub(r",\s*,", ", ", out)
+    out = re.sub(r"\s+\n", "\n", out)
+    return out.strip()
 
 class FitnessAgent:
     def __init__(self, token: str, user_id: str):
@@ -34,13 +47,13 @@ class FitnessAgent:
                 Messages(
                     role=MessagesRole.SYSTEM,
                     content=(
-                        "Представь, что ты — персональный фитнес-тренер с опытом 8+ лет. "
-                        "Общайся на 'ты'. На основе данных пользователя составь подробный план по дням: "
-                        "заголовок дня, список упражнений в формате 'Название — подходы×повторы, отдых', "
-                        "итоговая краткая заметка по прогрессии. "
-                        "Не используй термины RPE и RIR, не указывай субъективные шкалы нагрузки. "
-                        "Пиши только подходы×повторы, отдых, вес/вариацию/темп при необходимости. "
-                        "Не приветствуй пользователя и не используй вводные вроде 'привет'."
+                        "Представь, что ты персональный фитнес-тренер в тренажерном зале (опыт 8+ лет тренировок и работы с людьми). "
+                        "Пиши чётко и структурировано: блоки по дням, списки упражнений. "
+                        "Указывай подходы × повторы и отдых в секундах. "
+                        "Не используй термины RPE/RIR и формулировки 'до отказа'. "
+                        "Если видишь их в контексте — переформулируй на понятный уровень усилий (лёгко/умеренно/тяжело) без шкал. "
+                        "Обращайся к пользователю на 'ты'. "
+                        "Строй индивидуальную программу без уточняющих вопросов, используя данные анкеты."
                     ),
                 ),
                 Messages(role=MessagesRole.USER, content=physical_prompt),
@@ -63,33 +76,11 @@ class FitnessAgent:
             f"Уровень подготовки: {data.get('level', 'не указано')}"
         )
 
-    def _sanitize_rpe(self, text: str) -> str:
-        """Убирает RPE/RIR и чистит артефакты пунктуации."""
-        t = _RPE_CHUNK.sub("", text)
-        t = _RIR_CHUNK.sub("", t)
-        t = _EMPTY_PARENS.sub("", t)
-        t = _FIX_COMMAs.sub(",", t)
-        t = re.sub(r'\s*,\s*\)', ')', t)
-        t = re.sub(r'[ \t]{2,}', ' ', t)
-        return t.strip()
-
-    def _apply_header(self, text: str) -> str:
-        """Жёстко задаём шапку и убираем приветствия в начале."""
-        name = self._user_name
-        body = (text or "").lstrip()
-
-        low = body.lower()
-        for kw in ("привет", "здравствуй", "здравствуйте", "добрый день", "добрый вечер", "хай"):
-            if low.startswith(kw):
-                if "\n" in body:
-                    body = body.split("\n", 1)[1].lstrip()
-                else:
-                    body = re.sub(rf'^{kw}\W*', '', body, flags=re.IGNORECASE).lstrip()
-                break
-
-        header = (f"{name}, обработал твой запрос, и вот что получилось ⬇️" if name
-                  else "Обработал твой запрос, и вот что получилось ⬇️")
-        return header + "\n\n" + body
+    def _with_name_prefix(self, text: str) -> str:
+        """Всегда одинаковое вступление без 'привет'."""
+        name = (self._user_name or "").strip()
+        prefix = f"{name}, обработал твой запрос — вот что получилось ⬇️\n\n" if name else ""
+        return prefix + text
 
     async def get_response(self, user_input: str) -> str:
         from asyncio import to_thread
@@ -126,10 +117,11 @@ class FitnessAgent:
             raise last_err or RuntimeError("GigaChat call failed")
 
         message = await to_thread(_chat_sync)
-        clean = self._sanitize_rpe(message.content)
-        personalized = self._apply_header(clean)
+        self.payload.messages.append(message)
 
-        self.payload.messages.append(Messages(role=MessagesRole.ASSISTANT, content=clean))
+        cleaned = _strip_rpe(message.content)
+        personalized = self._with_name_prefix(cleaned)
+
         history = self.user_data.get("history", [])
         if user_input and user_input.strip():
             history.append(("🧍 " + user_input, "🤖 " + personalized))
