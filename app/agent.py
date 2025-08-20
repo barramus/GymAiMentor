@@ -6,7 +6,7 @@ import os
 import time
 from typing import Optional
 
-GIGACHAT_MODEL: str = os.getenv("GIGACHAT_MODEL", "GigaChat Max").strip()
+GIGACHAT_MODEL: str = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Max").strip()
 
 GIGACHAT_TEMPERATURE: float = float(os.getenv("GIGACHAT_TEMPERATURE", "0.2"))
 
@@ -45,6 +45,7 @@ class FitnessAgent:
             ],
             temperature=GIGACHAT_TEMPERATURE,
             max_tokens=GIGACHAT_MAX_TOKENS,
+            model=GIGACHAT_MODEL,
         )
 
     def _format_physical_data(self, data: dict) -> str:
