@@ -62,6 +62,7 @@ def run_main():
     app.add_handler(CommandHandler("program", regen))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
     app.add_handler(CallbackQueryHandler(on_program_action, pattern=r"^program:"))
 
     print("Бот запущен (polling).")
