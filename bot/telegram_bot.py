@@ -1,20 +1,20 @@
 import os
-from typing import Optional, Dict, Any
-from datetime import datetime
-from pathlib import Path
+import io
+import logging
+from typing import Optional, Dict, Any, Tuple
 
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
-    InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineKeyboardButton,
     InputFile,
 )
+from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from app.agent import FitnessAgent
 from app.storage import load_user_data, save_user_data
-
 
 user_states: Dict[str, Dict[str, Any]] = {}
 
@@ -43,16 +43,23 @@ LEVEL_KEYBOARD = ReplyKeyboardMarkup(
     one_time_keyboard=True,
 )
 
-START_KEYBOARD = ReplyKeyboardMarkup([["/start", "/program", "/reset"]], resize_keyboard=True)
+START_KEYBOARD = ReplyKeyboardMarkup([["/start"]], resize_keyboard=True)
 
-questions = [
-    ("age", "Сколько тебе лет?"),
-    ("height", "Твой рост в сантиметрах?"),
-    ("weight", "Твой текущий вес в килограммах?"),
-    ("goal", "Желаемый вес в килограммах?"),
-    ("restrictions", "Есть ли ограничения по здоровью или предпочтения в тренировках?"),
-    ("schedule", "Сколько раз в неделю можешь посещать тренажерный зал?"),
-]
+def build_program_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💾 Сохранить план", callback_data="program:save"),
+            InlineKeyboardButton("❌ Не сохранять", callback_data="program:discard"),
+        ],
+        [
+            InlineKeyboardButton("🧾 Экспорт PDF", callback_data="program:export:pdf"),
+            InlineKeyboardButton("📄 Экспорт MD", callback_data="program:export:md"),
+        ],
+        [
+            InlineKeyboardButton("🧭 Другая программа", callback_data="program:new"),
+            InlineKeyboardButton("🆕 Начать заново", callback_data="program:restart"),
+        ],
+    ])
 
 
 def _normalize_name(raw: str) -> str:
@@ -69,65 +76,85 @@ def normalize_gender(text: str) -> Optional[str]:
         return "мужской"
     return None
 
-async def _ask_goal_with_name(update: Update, name: str):
-    await update.message.reply_text(f"{name}, выбери свою цель тренировок ⬇️", reply_markup=GOAL_KEYBOARD)
-
-def build_program_actions_keyboard(saved: bool = False) -> InlineKeyboardMarkup:
+def _pick_plan_for_export(data: Dict[str, Any]) -> Optional[str]:
     """
-    Кнопки под выданным планом:
-      - 💾 Сохранить план / ✅ Сохранено
-      - ❌ Не сохранять
-      - 🧾 Экспорт PDF | 📄 Экспорт MD
-      - 🔁 Другая программа | 🆕 Начать заново
+    Сначала берём сохранённый план, иначе черновик.
     """
-    row1 = [
-        InlineKeyboardButton("✅ Сохранено", callback_data="noop") if saved
-        else InlineKeyboardButton("💾 Сохранить план", callback_data="program:save"),
-        InlineKeyboardButton("❌ Не сохранять", callback_data="program:discard"),
-    ]
-    row2 = [
-        InlineKeyboardButton("🧾 Экспорт PDF", callback_data="program:export:pdf"),
-        InlineKeyboardButton("📄 Экспорт MD", callback_data="program:export:md"),
-    ]
-    row3 = [
-        InlineKeyboardButton("🔁 Другая программа", callback_data="program:new"),
-        InlineKeyboardButton("🆕 Начать заново", callback_data="program:restart"),
-    ]
-    return InlineKeyboardMarkup([row1, row2, row3])
+    plan = (data.get("saved_plan_md") or "").strip()
+    if plan:
+        return plan
+    plan = (data.get("draft_plan_md") or "").strip()
+    return plan or None
 
-def _ensure_dirs(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _md_bytes(filename: str, content: str) -> Tuple[str, io.BytesIO]:
+    bio = io.BytesIO(content.encode("utf-8"))
+    bio.name = filename
+    bio.seek(0)
+    return filename, bio
 
-def _export_md(user_id: str, text: str) -> Path:
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = Path(f"data/exports/{user_id}/program-{ts}.md")
-    _ensure_dirs(path)
-    path.write_text(text, encoding="utf-8")
-    return path
-
-def _export_pdf(user_id: str, text: str) -> Path:
-    from reportlab.platypus import SimpleDocTemplate, Preformatted, Spacer
-    from reportlab.lib.styles import getSampleStyleSheet
+def _pdf_bytes(filename: str, md_text: str) -> Tuple[str, io.BytesIO]:
+    """
+    Простой PDF: переносим Markdown как обычный текст (без рендеринга разметки).
+    Нужна библиотека reportlab.
+    """
     from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import mm
 
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = Path(f"data/exports/{user_id}/program-{ts}.pdf")
-    _ensure_dirs(path)
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
 
-    styles = getSampleStyleSheet()
-    doc = SimpleDocTemplate(str(path), pagesize=A4)
-    story = [Preformatted(text, styles["Code"]), Spacer(1, 12)]
-    doc.build(story)
-    return path
+    left = 15 * mm
+    top = height - 20 * mm
+    y = top
+    max_width = width - 2 * left
 
-async def send_program_with_actions(update: Update, text: str, saved: bool = False):
-    """Показать план + обновить last_program_text"""
-    user_id = str(update.effective_user.id)
-    user_data = load_user_data(user_id)
-    user_data["last_program_text"] = text
-    save_user_data(user_id, user_data)
-    await update.message.reply_text(text, reply_markup=build_program_actions_keyboard(saved=saved))
+    c.setFont("Helvetica", 11)
 
+    for raw_line in md_text.splitlines():
+        line = raw_line.replace("\t", "    ")
+    
+        while line:
+            chunk = line[:95]
+            line = line[95:]
+            c.drawString(left, y, chunk)
+            y -= 6 * mm
+            if y < 20 * mm:
+                c.showPage()
+                c.setFont("Helvetica", 11)
+                y = top
+
+    c.save()
+    buffer.seek(0)
+    buffer.name = filename
+    return filename, buffer
+
+async def _send_program(update: Update, text_md: str):
+    """
+    Отправляет план как Markdown и прикрепляет inline-клавиатуру действий.
+    """
+    await update.message.reply_text(
+        text_md,
+        parse_mode=ParseMode.MARKDOWN,
+        disable_web_page_preview=True,
+        reply_markup=build_program_keyboard(),
+    )
+
+questions = [
+    ("age", "Сколько тебе лет?"),
+    ("height", "Твой рост в сантиметрах?"),
+    ("weight", "Твой текущий вес в килограммах?"),
+    ("goal", "Желаемый вес в килограммах?"),
+    ("restrictions", "Есть ли ограничения по здоровью или предпочтения в тренировках?"),
+    ("schedule", "Сколько раз в неделю можешь посещать тренажерный зал?"),
+]
+
+async def _ask_goal_with_name(update: Update, name: str):
+    await update.message.reply_text(
+        f"{name}, выбери свою цель тренировок ⬇️",
+        reply_markup=GOAL_KEYBOARD
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -143,37 +170,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_states.get(user_id, {"mode": None, "step": 0, "data": {}})
 
-    # выбор цели
+    # Выбор цели
     if text in GOAL_MAPPING:
-        user_states[user_id] = {"mode": "awaiting_gender", "step": 0, "data": {"target": GOAL_MAPPING[text]}}
+        user_states[user_id] = {
+            "mode": "awaiting_gender",
+            "step": 0,
+            "data": {"target": GOAL_MAPPING[text]},
+        }
         await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
         return
 
-    # имя
+    # Имя
     if state.get("mode") == "awaiting_name":
         if not text:
             await update.message.reply_text("Пожалуйста, напиши своё имя одним сообщением.")
             return
+
         name = _normalize_name(text)
         physical_data["name"] = name
         user_data["physical_data"] = physical_data
         save_user_data(user_id, user_data)
+
         user_states[user_id] = {"mode": None, "step": 0, "data": {}}
         await _ask_goal_with_name(update, name)
         return
 
-    # пол
+    # Пол
     if state.get("mode") == "awaiting_gender":
         g = normalize_gender(text)
         if not g:
             await update.message.reply_text("Пожалуйста, выбери пол кнопкой ниже:", reply_markup=GENDER_KEYBOARD)
             return
+
         state["data"]["gender"] = g
-        user_states[user_id] = {"mode": "survey", "step": 2, "data": state["data"]}
+        user_states[user_id] = {
+            "mode": "survey",
+            "step": 2,
+            "data": state["data"],
+        }
         await update.message.reply_text(questions[0][1])
         return
 
-    # основная анкета
+    # Опрос
     if not completed and state.get("mode") == "survey":
         if state["step"] > 1:
             prev_key = questions[state["step"] - 2][0]
@@ -186,12 +224,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(next_text)
             return
 
-        # спрашиваем уровень
-        user_states[user_id] = {"mode": "awaiting_level", "step": 0, "data": state["data"]}
+        # После последнего вопроса — уровень
+        user_states[user_id] = {
+            "mode": "awaiting_level",
+            "step": 0,
+            "data": state["data"],
+        }
         await update.message.reply_text("Выбери свой уровень подготовки:", reply_markup=LEVEL_KEYBOARD)
         return
 
-    # уровень
+    # Уровень
     if state.get("mode") == "awaiting_level":
         if text not in LEVEL_CHOICES:
             await update.message.reply_text("Пожалуйста, выбери уровень кнопкой ниже:", reply_markup=LEVEL_KEYBOARD)
@@ -200,6 +242,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         level = "начинающий" if "Начинающий" in text else "опытный"
         state["data"]["level"] = level
 
+        # Сохраняем анкету
         finished_data = state["data"]
         user_states.pop(user_id, None)
 
@@ -209,119 +252,138 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data["physical_data"] = base_physical
         user_data["physical_data_completed"] = True
         user_data.setdefault("history", [])
+        # сбрасываем черновик/сохранённый план
+        user_data["draft_plan_md"] = None
+        user_data["saved_plan_md"] = None
         save_user_data(user_id, user_data)
 
         await update.message.reply_text("Спасибо! Формирую твою персональную программу…")
 
+        # Генерация программы
         agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
         try:
-            response = await agent.get_response("")
+            plan_md = await agent.get_response("")
         except Exception:
             context.application.logger.exception("Ошибка генерации программы")
-            await update.message.reply_text("Сейчас не удалось сгенерировать программу. Попробуй ещё раз позже.")
+            await update.message.reply_text(
+                "Сейчас не удалось сгенерировать программу. Попробуй ещё раз чуть позже.",
+                reply_markup=START_KEYBOARD,
+            )
             return
 
+        # Сохраняем как ЧЕРНОВИК и показываем с inline-кнопками
         user_data = load_user_data(user_id)
-        user_data["last_program_text"] = response
-        user_data.setdefault("history", []).append(("🧍 Запрос программы", "🤖 " + response))
+        user_data["draft_plan_md"] = plan_md
         save_user_data(user_id, user_data)
 
-        await update.message.reply_text(response, reply_markup=build_program_actions_keyboard(saved=False))
+        await _send_program(update, plan_md)
         return
 
-    # свободный диалог
+    # Любой другой текст после анкеты — обычный диалог с агентом
     agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
     reply = await agent.get_response(text)
+
     user_data.setdefault("history", []).append(("🧍 " + text, "🤖 " + reply))
     save_user_data(user_id, user_data)
-    await update.message.reply_text(reply)
 
+    await update.message.reply_text(
+        reply,
+        parse_mode=ParseMode.MARKDOWN,
+        disable_web_page_preview=True
+    )
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
+async def on_program_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.callback_query:
         return
-    await query.answer()
+    q = update.callback_query
+    await q.answer()
 
     user_id = str(update.effective_user.id)
-    chat_id = update.effective_chat.id
-    user_data = load_user_data(user_id)
-    text = user_data.get("last_program_text")
-    data = (query.data or "").strip()
+    action = q.data or ""
+    context.application.logger.info("program action: user=%s data=%s", user_id, action)
 
-    if data == "noop":
-        return
+    data = load_user_data(user_id)
 
-    # сохранить
-    if data == "program:save":
-        if not text:
-            await query.edit_message_reply_markup(reply_markup=build_program_actions_keyboard(saved=False))
-            await context.bot.send_message(chat_id, "Нет сгенерированной программы для сохранения.")
+    # program:save
+    if action == "program:save":
+        plan = (data.get("draft_plan_md") or "").strip()
+        if not plan:
+            await q.edit_message_reply_markup(reply_markup=build_program_keyboard())
+            await q.message.reply_text("Пока нечего сохранять.")
             return
-        programs = user_data.get("programs") or []
-        programs.append({"ts": datetime.now().isoformat(timespec="seconds"), "text": text})
-        user_data["programs"] = programs
-        save_user_data(user_id, user_data)
-        await query.edit_message_reply_markup(reply_markup=build_program_actions_keyboard(saved=True))
-        await context.bot.send_message(chat_id, "Программа сохранена ✅")
+        data["saved_plan_md"] = plan
+        save_user_data(user_id, data)
+        await q.message.reply_text("Готово! План сохранён. Можно экспортировать в PDF/MD.")
         return
 
-    # не сохранять
-    if data == "program:discard":
-        await context.bot.send_message(chat_id, "Ок, не сохраняю. Если передумаешь — нажми «💾 Сохранить план».")
-        # оставляем прежнюю клавиатуру (чтобы можно было передумать)
+    # program:discard
+    if action == "program:discard":
+        data["draft_plan_md"] = None
+        data["saved_plan_md"] = None
+        save_user_data(user_id, data)
+        await q.message.reply_text("Черновик очищен. Сгенерировать другой план — кнопкой «🧭 Другая программа».")
         return
 
-    # экспорт
-    if data == "program:export:md":
-        if not text:
-            await context.bot.send_message(chat_id, "Пока нечего экспортировать.")
+    # program:export:pdf / md
+    if action.startswith("program:export:"):
+        plan = _pick_plan_for_export(data)
+        if not plan:
+            await q.message.reply_text("Пока нечего экспортировать.")
             return
-        path = _export_md(user_id, text)
-        with path.open("rb") as f:
-            await context.bot.send_document(chat_id, document=InputFile(f, filename=path.name))
+
+        kind = action.split(":")[-1]
+        if kind == "md":
+            name, bio = _md_bytes("workout_plan.md", plan)
+            await q.message.reply_document(InputFile(bio, filename=name))
+        else:
+            name, bio = _pdf_bytes("workout_plan.pdf", plan)
+            await q.message.reply_document(InputFile(bio, filename=name))
         return
 
-    if data == "program:export:pdf":
-        if not text:
-            await context.bot.send_message(chat_id, "Пока нечего экспортировать.")
-            return
-        path = _export_pdf(user_id, text)
-        with path.open("rb") as f:
-            await context.bot.send_document(chat_id, document=InputFile(f, filename=path.name))
-        return
-
-    # другая программа (регенерация без анкеты)
-    if data == "program:new":
+    # program:new — сгенерировать альтернативный план без опроса
+    if action == "program:new":
+        await q.message.reply_text("Делаю альтернативный вариант плана…")
         agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
         try:
-            new_text = await agent.get_response("")
+            alt_prompt = (
+                "Сгенерируй альтернативную программу тренировок теми же вводными, "
+                "избегай повторов упражнений, оформи строго в Markdown: заголовок, дни жирным, "
+                "каждый пункт отдельной строкой с «- ». Без RPE."
+            )
+            plan = await agent.get_response(alt_prompt)
         except Exception:
-            context.application.logger.exception("Ошибка регенерации программы (program:new)")
-            await context.bot.send_message(chat_id, "Не вышло создать другую программу, попробуй ещё раз.")
+            context.application.logger.exception("Ошибка генерации альтернативного плана")
+            await q.message.reply_text("Не удалось сгенерировать альтернативный план. Попробуй позже.")
             return
 
-        user_data["last_program_text"] = new_text
-        user_data.setdefault("history", []).append(("🧍 Другая программа", "🤖 " + new_text))
-        save_user_data(user_id, user_data)
+        data = load_user_data(user_id)
+        data["draft_plan_md"] = plan
+        save_user_data(user_id, data)
 
-        await context.bot.send_message(chat_id, new_text, reply_markup=build_program_actions_keyboard(saved=False))
+        # отправим новый как отдельное сообщение (чтобы не путаться с edit_message)
+        await q.message.reply_text(
+            plan,
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True,
+            reply_markup=build_program_keyboard(),
+        )
         return
 
-    # начать заново (сменить цель и пройти опрос)
-    if data == "program:restart":
-        # сбрасываем всё, но сохраняем имя (если было) — как /start
-        name = (user_data.get("physical_data") or {}).get("name")
-        user_data["physical_data"] = {"name": name}
-        user_data["physical_data_completed"] = False
-        user_data["history"] = []
-        user_data.pop("last_program_text", None)
-        save_user_data(user_id, user_data)
+    # program:restart — стереть анкету и начать заново
+    if action == "program:restart":
+        physical = data.get("physical_data") or {}
+        name = physical.get("name")
+        data["physical_data"] = {"name": name}
+        data["physical_data_completed"] = False
+        data["history"] = []
+        data["draft_plan_md"] = None
+        data["saved_plan_md"] = None
+        save_user_data(user_id, data)
 
-        user_states.pop(user_id, None)
+        user_states[user_id] = {"mode": "awaiting_name" if not name else None, "step": 0, "data": {}}
+
         if not name:
-            user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
-            await context.bot.send_message(chat_id, "Давай начнём заново. Как тебя зовут?")
+            await q.message.reply_text("Ок, начнём заново. Как тебя зовут?")
         else:
-            await context.bot.send_message(chat_id, f"{name}, выбери свою цель тренировок ⬇️", reply_markup=GOAL_KEYBOARD)
+            await q.message.reply_text(f"Ок, {name}! Выбери новую цель ⬇️", reply_markup=GOAL_KEYBOARD)
         return
