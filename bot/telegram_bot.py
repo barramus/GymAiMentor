@@ -1,6 +1,4 @@
 import os
-import io
-import time
 import logging
 from typing import Optional, Dict
 
@@ -9,7 +7,6 @@ from telegram import (
     ReplyKeyboardMarkup,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    InputFile,
 )
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
@@ -17,7 +14,9 @@ from telegram.ext import ContextTypes
 from app.agent import FitnessAgent
 from app.storage import load_user_data, save_user_data
 
+__version__ = "tg-bot-1.3.0"
 logger = logging.getLogger("bot.telegram_bot")
+
 
 user_states: Dict[str, dict] = {}
 
@@ -39,7 +38,7 @@ GENDER_KEYBOARD = ReplyKeyboardMarkup(
     one_time_keyboard=True,
 )
 
-LEVEL_CHOICES = ["🌱 Начинающий", "🔥 Опытный"]
+LEVEL_CHOICES = ["🚀 Начинающий", "🔥 Опытный"]
 LEVEL_KEYBOARD = ReplyKeyboardMarkup(
     [LEVEL_CHOICES],
     resize_keyboard=True,
@@ -79,27 +78,13 @@ def _program_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("💾 Сохранить план", callback_data="program:save"),
-                InlineKeyboardButton("🗑 Не сохранять", callback_data="program:discard"),
-            ],
-            [
-                InlineKeyboardButton("📝 Экспорт .md", callback_data="program:export:md"),
-                InlineKeyboardButton("📄 Экспорт .pdf", callback_data="program:export:pdf"),
-            ],
-            [
-                InlineKeyboardButton("🔁 Другая программа", callback_data="program:new"),
+                InlineKeyboardButton("🆕 Другая программа", callback_data="program:new"),
                 InlineKeyboardButton("🔄 Начать заново", callback_data="program:restart"),
             ],
         ]
     )
 
-def _store_current_plan(user_id: str, text: str):
-    data = load_user_data(user_id)
-    data["current_plan"] = text or ""
-    save_user_data(user_id, data)
-
 async def _send_program(update: Update, user_id: str, text: str):
-    _store_current_plan(user_id, text)
     await update.effective_chat.send_message(
         text,
         parse_mode=ParseMode.MARKDOWN,
@@ -107,41 +92,6 @@ async def _send_program(update: Update, user_id: str, text: str):
         disable_web_page_preview=True,
     )
 
-def _make_md_bytes(plan_text: str) -> bytes:
-    return plan_text.encode("utf-8")
-
-def _make_pdf_bytes(plan_text: str) -> bytes:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import SimpleDocTemplate, Preformatted
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
-    style = getSampleStyleSheet()["Code"]
-    doc.build([Preformatted(plan_text, style)])
-    buf.seek(0)
-    return buf.read()
-
-async def _export_plan(update: Update, plan_text: str, fmt: str):
-    if not plan_text:
-        await update.effective_chat.send_message("План для экспорта не найден. Сгенерируй его заново.")
-        return
-    try:
-        if fmt == "md":
-            data = _make_md_bytes(plan_text)
-            await update.effective_chat.send_document(
-                document=InputFile(io.BytesIO(data), filename="program.md"),
-                caption="Экспорт в Markdown",
-            )
-        else:
-            data = _make_pdf_bytes(plan_text)
-            await update.effective_chat.send_document(
-                document=InputFile(io.BytesIO(data), filename="program.pdf"),
-                caption="Экспорт в PDF",
-            )
-    except Exception:
-        logger.exception("Ошибка экспорта плана (%s)", fmt)
-        await update.effective_chat.send_message("Не удалось экспортировать файл. Попробуй ещё раз позже.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -166,6 +116,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
         return
 
+
     if state.get("mode") == "awaiting_name":
         if not text:
             await update.message.reply_text("Пожалуйста, напиши своё имя одним сообщением.")
@@ -178,6 +129,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _ask_goal_with_name(update, name)
         return
 
+
     if state.get("mode") == "awaiting_gender":
         g = normalize_gender(text)
         if not g:
@@ -187,6 +139,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_states[user_id] = {"mode": "survey", "step": 2, "data": state["data"]}
         await update.message.reply_text(questions[0][1])
         return
+
 
     if not completed and state.get("mode") == "survey":
         if state["step"] > 1:
@@ -205,6 +158,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup([LEVEL_CHOICES], resize_keyboard=True, one_time_keyboard=True),
         )
         return
+    
 
     if state.get("mode") == "awaiting_level":
         if text not in LEVEL_CHOICES:
@@ -263,37 +217,6 @@ async def on_program_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     action = data.split(":", 1)[1] if ":" in data else ""
 
-    user_data = load_user_data(user_id)
-    current_plan = (user_data.get("current_plan") or "").strip()
-
-
-    if action == "save":
-        if not current_plan:
-            await q.message.reply_text("План не найден — сгенерируй его заново.")
-            return
-        saved = user_data.get("saved_programs") or []
-        saved.append({"ts": int(time.time()), "text": current_plan})
-        user_data["saved_programs"] = saved
-        save_user_data(user_id, user_data)
-        await q.message.reply_text("✅ План сохранён. Можешь экспортировать или сгенерировать другой.")
-        return
-
-
-    if action == "discard":
-        user_data["current_plan"] = ""
-        save_user_data(user_id, user_data)
-        await q.message.reply_text("🗑 Текущий план очищён. Хочешь новый — нажми «Другая программа».")
-        return
-
-
-    if action.startswith("export"):
-        if not current_plan:
-            await q.message.reply_text("Плана нет для экспорта — сгенерируй его заново.")
-            return
-        fmt = action.split(":", 1)[1] if ":" in action else "md"
-        await _export_plan(update, current_plan, fmt)
-        return
-
 
     if action == "new":
         progress_msg = await q.message.reply_text("Формирую для тебя другую программу…")
@@ -306,16 +229,17 @@ async def on_program_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await progress_msg.edit_text("Не получилось сгенерировать новую программу. Попробуй ещё раз.")
             return
 
-        await progress_msg.edit_text("Готово! Держи альтернативный вариант ⬇️")
+        await progress_msg.edit_text("Готово! Держи альтернативный вариант 🆕")
         await _send_program(update, user_id, plan)
         return
 
 
     if action == "restart":
+        user_data = load_user_data(user_id)
         name = (user_data.get("physical_data") or {}).get("name")
+
         user_data["physical_data"] = {"name": name}
         user_data["physical_data_completed"] = False
-        user_data["current_plan"] = ""
         save_user_data(user_id, user_data)
 
         if name:
@@ -326,9 +250,4 @@ async def on_program_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
         return
 
-__all__ = [
-    "handle_message",
-    "on_program_action",
-    "user_states",
-    "GOAL_KEYBOARD",
-]
+__all__ = ["handle_message", "on_program_action", "user_states", "GOAL_KEYBOARD"]

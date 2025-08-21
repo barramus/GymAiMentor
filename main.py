@@ -11,22 +11,36 @@ from telegram.ext import (
     filters,
 )
 
-from bot.telegram_bot import handle_message, on_program_action, GOAL_KEYBOARD, user_states
 from app.storage import load_user_data, save_user_data
-
-load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+from bot.telegram_bot import (
+    handle_message,
+    on_program_action,
+    user_states,
+    GOAL_KEYBOARD,
+)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
+logger = logging.getLogger("main")
+
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /start:
+    - сохраняем только name (если уже был), остальную анкету и историю очищаем;
+    - если name нет — спрашиваем имя и ставим mode='awaiting_name';
+    - если name есть — сразу просим выбрать цель.
+    """
     if not update.message:
         return
+
     user_id = str(update.effective_user.id)
     user_data = load_user_data(user_id)
+
     physical = user_data.get("physical_data") or {}
     name = physical.get("name")
 
@@ -35,11 +49,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data["history"] = []
     user_data["current_plan"] = ""
     save_user_data(user_id, user_data)
+
     user_states.pop(user_id, None)
 
     if not name:
         user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
-        await update.message.reply_text("Привет! Я твой персональный фитнес-тренер GymAiMentor 💪 Как тебя зовут?")
+        await update.message.reply_text("Привет! Я твой персональный фитнес-тренер GymAiMentor💪🏼 Как тебя зовут?")
         return
 
     await update.message.reply_text(f"{name}, выбери свою цель тренировок ⬇️", reply_markup=GOAL_KEYBOARD)
@@ -50,20 +65,14 @@ def run_main():
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    async def regen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        from app.agent import FitnessAgent
-        user_id = str(update.effective_user.id)
-        await update.message.reply_text("Делаю новый вариант программы…")
-        agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
-        plan = await agent.get_response("")
-        from bot.telegram_bot import _send_program
-        await _send_program(update, user_id, plan)
-    app.add_handler(CommandHandler("program", regen))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("start", start))
+
 
     app.add_handler(CallbackQueryHandler(on_program_action, pattern=r"^program:"))
+
+
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("Бот запущен (polling).")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
