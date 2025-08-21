@@ -11,16 +11,8 @@ from telegram.ext import (
     filters,
 )
 
+from bot.telegram_bot import handle_message, on_program_action, GOAL_KEYBOARD, user_states
 from app.storage import load_user_data, save_user_data
-from bot.telegram_bot import (
-    handle_message,
-    on_program_action,
-    user_states,
-    GOAL_KEYBOARD,
-    _pick_plan_for_export,
-    _md_bytes,
-    _pdf_bytes,
-)
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -29,25 +21,20 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
-LOG = logging.getLogger("gym-aim")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
-
     user_id = str(update.effective_user.id)
     user_data = load_user_data(user_id)
-
     physical = user_data.get("physical_data") or {}
     name = physical.get("name")
 
     user_data["physical_data"] = {"name": name}
     user_data["physical_data_completed"] = False
     user_data["history"] = []
-    user_data["draft_plan_md"] = None
-    user_data["saved_plan_md"] = None
+    user_data["current_plan"] = ""
     save_user_data(user_id, user_data)
-
     user_states.pop(user_id, None)
 
     if not name:
@@ -57,26 +44,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"{name}, выбери свою цель тренировок ⬇️", reply_markup=GOAL_KEYBOARD)
 
-async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    args = (context.args or [])
-    kind = (args[0].lower() if args else "md")
-
-    user_id = str(update.effective_user.id)
-    data = load_user_data(user_id)
-    plan = _pick_plan_for_export(data)
-    if not plan:
-        await update.message.reply_text("Пока нечего экспортировать.")
-        return
-
-    if kind == "pdf":
-        name, bio = _pdf_bytes("workout_plan.pdf", plan)
-    else:
-        name, bio = _md_bytes("workout_plan.md", plan)
-
-    await update.message.reply_document(bio)
-
 def run_main():
     if not TELEGRAM_TOKEN:
         raise RuntimeError("Переменная окружения TELEGRAM_TOKEN не задана")
@@ -84,9 +51,18 @@ def run_main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("export", export_cmd))
-    app.add_handler(CallbackQueryHandler(on_program_action, pattern=r"^program:(save|discard|export:(pdf|md)|new|restart)$"))
+    async def regen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        from app.agent import FitnessAgent
+        user_id = str(update.effective_user.id)
+        await update.message.reply_text("Делаю новый вариант программы…")
+        agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
+        plan = await agent.get_response("")
+        from bot.telegram_bot import _send_program
+        await _send_program(update, user_id, plan)
+    app.add_handler(CommandHandler("program", regen))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(on_program_action, pattern=r"^program:"))
 
     print("Бот запущен (polling).")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
