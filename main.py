@@ -1,4 +1,5 @@
 import os
+import logging
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -9,7 +10,6 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.constants import ParseMode
 
 from app.storage import load_user_data, save_user_data
 from bot.telegram_bot import (
@@ -17,10 +17,19 @@ from bot.telegram_bot import (
     on_program_action,
     user_states,
     GOAL_KEYBOARD,
+    _pick_plan_for_export,
+    _md_bytes,
+    _pdf_bytes,
 )
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+LOG = logging.getLogger("gym-aim")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -53,11 +62,9 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     args = (context.args or [])
     kind = (args[0].lower() if args else "md")
+
     user_id = str(update.effective_user.id)
     data = load_user_data(user_id)
-
-    from bot.telegram_bot import _pick_plan_for_export, _md_bytes, _pdf_bytes
-
     plan = _pick_plan_for_export(data)
     if not plan:
         await update.message.reply_text("Пока нечего экспортировать.")
@@ -78,12 +85,7 @@ def run_main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("export", export_cmd))
-
-    app.add_handler(CallbackQueryHandler(
-        on_program_action,
-        pattern=r"^program:(save|discard|export:(pdf|md)|new|restart)$"
-    ))
-
+    app.add_handler(CallbackQueryHandler(on_program_action, pattern=r"^program:(save|discard|export:(pdf|md)|new|restart)$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("Бот запущен (polling).")
