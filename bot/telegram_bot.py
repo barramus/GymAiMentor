@@ -1,5 +1,11 @@
+LAST_REPLIES: dict[str, str] = {}
+
 import os
+import re
+import time
 import logging
+from pathlib import Path
+from datetime import datetime
 from typing import Optional, Dict
 
 from telegram import (
@@ -12,7 +18,12 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from app.agent import FitnessAgent
-from app.storage import load_user_data, save_user_data
+from app.storage import (
+    load_user_data,
+    save_user_data,
+    save_lift_history,
+)
+from app.weights import base_key
 
 __version__ = "tg-bot-1.3.0"
 logger = logging.getLogger("bot.telegram_bot")
@@ -47,14 +58,15 @@ LEVEL_KEYBOARD = ReplyKeyboardMarkup(
 
 START_KEYBOARD = ReplyKeyboardMarkup([["/start"]], resize_keyboard=True)
 
-questions = [
-    ("age", "Сколько тебе лет?"),
-    ("height", "Твой рост в сантиметрах?"),
-    ("weight", "Твой текущий вес в килограммах?"),
-    ("goal", "Желаемый вес в килограммах?"),
-    ("restrictions", "Есть ли ограничения по здоровью или предпочтения в тренировках?"),
-    ("schedule", "Сколько раз в неделю можешь посещать тренажерный зал?"),
-]
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["📋 Другая программа", "🔁 Начать заново"],
+        ["💾 Сохранить в файл", "📝 Записать тренировку"],
+        ["📈 Моя динамика"],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
 
 
 def _normalize_name(raw: str) -> str:
@@ -62,6 +74,12 @@ def _normalize_name(raw: str) -> str:
     if len(name) > 80:
         name = name[:80]
     return name
+
+def sanitize_for_tg(text: str) -> str:
+    """Убираем HTML-теги и <br> → обычные переносы строк."""
+    text = re.sub(r"\s*<br\s*/?>\s*", "\n", text)
+    text = re.sub(r"</?p\s*/?>", "\n", text)
+    return text.strip()
 
 def normalize_gender(text: str) -> Optional[str]:
     t = (text or "").strip().lower()
@@ -72,7 +90,10 @@ def normalize_gender(text: str) -> Optional[str]:
     return None
 
 async def _ask_goal_with_name(update: Update, name: str):
-    await update.message.reply_text(f"{name}, выбери свою цель тренировок ⬇️", reply_markup=GOAL_KEYBOARD)
+    await update.message.reply_text(
+        f"{name}, выбери свою цель тренировок ⬇️",
+        reply_markup=GOAL_KEYBOARD,
+    )
 
 def _program_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -93,6 +114,126 @@ async def _send_program(update: Update, user_id: str, text: str):
     )
 
 
+async def _save_last_to_file(update: Update, user_id: str):
+    from app.storage import get_last_reply
+
+    text = LAST_REPLIES.get(user_id) or get_last_reply(user_id) or ""
+    if not text.strip():
+        await update.message.reply_text(
+            "Пока нечего сохранять. Сначала запроси программу или задай вопрос.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    ts = int(time.time())
+    fname = f"program_{user_id}_{ts}.txt"
+    out_path = Path("data") / "users" / fname
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text, encoding="utf-8")
+
+    with open(out_path, "rb") as fh:
+        await update.effective_chat.send_document(
+            fh,
+            filename=fname,
+            caption="Файл с твоим последним ответом",
+        )
+
+def _normalize_piece_name(s: str) -> str:
+    return re.sub(r"\s+", " ", s.strip().lower())
+
+async def _parse_and_save_log(update: Update, user_id: str, text: str):
+    """
+    Ожидает строку наподобие:
+    "присед 50×8, жим лёжа 35×10, верхний блок 40×12"
+    """
+    raw = text.replace("x", "×").replace("*", "×")
+    parts = re.split(r"[,\n;]+", raw)
+    saved, errors = [], []
+
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        m = re.search(r"(.+?)\s+(\d+(?:[.,]\d+)?)\s*×\s*(\d{1,2})", p, flags=re.IGNORECASE)
+        if not m:
+            errors.append(p)
+            continue
+        name, wtxt, reps_txt = m.group(1), m.group(2), m.group(3)
+        try:
+            weight = float(wtxt.replace(",", "."))
+            reps = int(reps_txt)
+        except Exception:
+            errors.append(p)
+            continue
+
+        key = base_key(_normalize_piece_name(name)) or ""
+        if not key:
+            errors.append(p)
+            continue
+
+        save_lift_history(user_id, key, weight, reps, rir=None)
+        saved.append((name.strip(), weight, reps))
+
+    if saved:
+        msg = "✅ Сохранил:\n" + "\n".join(
+            [f"• {n} — {int(w) if float(w).is_integer() else round(float(w),1)}×{r}" for n, w, r in saved]
+        )
+        await update.message.reply_text(msg, reply_markup=MAIN_KEYBOARD)
+
+    if errors and not saved:
+        await update.message.reply_text(
+            "Не понял формат для:\n" + "\n".join([f"• {e}" for e in errors]) + "\n\nПример: присед 50×8",
+            reply_markup=MAIN_KEYBOARD,
+        )
+    elif errors:
+        await update.message.reply_text(
+            "Не распознал часть записей:\n" + "\n".join([f"• {e}" for e in errors]) + "\nПример: жим лёжа 35×10",
+            reply_markup=MAIN_KEYBOARD,
+        )
+
+_NAME_BY_KEY = {
+    "squat": "Приседания",
+    "deadlift": "Становая тяга",
+    "bench": "Жим штанги лёжа",
+    "ohp": "Жим стоя",
+    "row": "Тяга штанги в наклоне",
+    "lat_pulldown": "Тяга верхнего блока",
+    "leg_curl": "Сгибание ног в тренажёре",
+    "leg_press": "Жим ногами",
+}
+
+async def _send_dynamics(update: Update, user_id: str):
+    data = load_user_data(user_id)
+    lifts = data.get("lifts") or {}
+    if not lifts:
+        await update.message.reply_text(
+            "Пока нет записей. Нажми «📝 Записать тренировку» и пришли результаты.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    lines = ["Твоя динамика (последние записи):"]
+    for key, rec in lifts.items():
+        name = _NAME_BY_KEY.get(key, key)
+        last_w = rec.get("last_weight")
+        reps = rec.get("reps")
+        hist = rec.get("history") or []
+        tail = hist[-3:]
+        hist_str = ", ".join(
+            [
+                f"{int(h['last_weight']) if float(h['last_weight']).is_integer() else round(float(h['last_weight']),1)}×{h['reps']} ({datetime.utcfromtimestamp(h['ts']).strftime('%d.%m')})"
+                for h in tail
+            ]
+        )
+        if last_w and reps:
+            lines.append(
+                f"• {name}: последняя — {int(last_w) if float(last_w).is_integer() else round(float(last_w),1)}×{reps}; история: {hist_str}"
+            )
+        else:
+            lines.append(f"• {name}: есть записи, но не распознан формат.")
+    await update.message.reply_text("\n".join(lines), reply_markup=MAIN_KEYBOARD)
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -107,15 +248,65 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_states.get(user_id, {"mode": None, "step": 0, "data": {}})
 
-    if text in GOAL_MAPPING:
-        user_states[user_id] = {
-            "mode": "awaiting_gender",
-            "step": 0,
-            "data": {"target": GOAL_MAPPING[text]},
-        }
-        await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
+    if text == "❓ Задать вопрос AI-тренеру":
+        user_states[user_id] = {"mode": "qa", "step": 0, "data": {}}
+        await update.message.reply_text(
+            "Задай вопрос по тренировкам 👇",
+            reply_markup=MAIN_KEYBOARD,
+        )
         return
 
+    if text == "📈 Моя динамика":
+        await _send_dynamics(update, user_id)
+        return
+
+    if text == "📝 Записать тренировку":
+        user_states[user_id] = {"mode": "log", "step": 0, "data": {}}
+        await update.message.reply_text(
+            "Пришли результаты в рабочих подходах в формате (где \"50\" — вес отягощения, а \"8\" — количество повторений):\n"
+            "`присед 50×8, жим лёжа 35×10`\n"
+            "Можно одной строкой или несколькими сообщениями.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    if text == "💾 Сохранить в файл":
+        await _save_last_to_file(update, user_id)
+        return
+
+    if text == "🔁 Начать заново":
+        user_data["physical_data"] = {"name": name}
+        user_data["physical_data_completed"] = False
+        save_user_data(user_id, user_data)
+        await update.message.reply_text(
+            "Начнём заново! Как тебя зовут?",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
+        return
+
+    if text == "📋 Другая программа":
+        user_states[user_id] = {"mode": None, "step": 0, "data": {}}
+        agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
+        try:
+            plan = await agent.get_response("")
+        except Exception:
+            await update.message.reply_text(
+                "Не удалось сгенерировать программу. Попробуй позже.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
+        plan = sanitize_for_tg(plan)
+        await _send_program(update, user_id, plan)
+        LAST_REPLIES[user_id] = plan
+        from app.storage import set_last_reply; set_last_reply(user_id, plan)
+        return
+
+    if text in GOAL_MAPPING:
+        user_states[user_id] = {"mode": "awaiting_gender", "step": 0, "data": {"target": GOAL_MAPPING[text]}}
+        await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
+        return
 
     if state.get("mode") == "awaiting_name":
         if not text:
@@ -129,7 +320,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _ask_goal_with_name(update, name)
         return
 
-
     if state.get("mode") == "awaiting_gender":
         g = normalize_gender(text)
         if not g:
@@ -137,9 +327,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         state["data"]["gender"] = g
         user_states[user_id] = {"mode": "survey", "step": 2, "data": state["data"]}
-        await update.message.reply_text(questions[0][1])
+        await update.message.reply_text("Сколько тебе лет?")
         return
 
+    questions = [
+        ("age", "Сколько тебе лет?"),
+        ("height", "Твой рост в сантиметрах?"),
+        ("weight", "Твой текущий вес в килограммах?"),
+        ("goal", "Желаемый вес в килограммах?"),
+        ("restrictions", "Есть ли ограничения по здоровью или предпочтения в тренировках?"),
+        ("schedule", "Сколько раз в неделю можешь посещать тренажерный зал?"),
+    ]
 
     if not completed and state.get("mode") == "survey":
         if state["step"] > 1:
@@ -158,7 +356,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup([LEVEL_CHOICES], resize_keyboard=True, one_time_keyboard=True),
         )
         return
-    
 
     if state.get("mode") == "awaiting_level":
         if text not in LEVEL_CHOICES:
@@ -194,6 +391,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await _send_program(update, user_id, plan)
+        LAST_REPLIES[user_id] = plan
+        from app.storage import set_last_reply; set_last_reply(user_id, plan)
+        return
+
+    if state.get("mode") == "log":
+        await _parse_and_save_log(update, user_id, text)
+        user_states[user_id] = {"mode": None, "step": 0, "data": {}}
         return
 
     agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
@@ -201,7 +405,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data.setdefault("history", []).append(("🧍 " + text, "🤖 " + reply))
     save_user_data(user_id, user_data)
 
-    await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
+    reply = sanitize_for_tg(reply)
+    LAST_REPLIES[user_id] = reply
+    from app.storage import set_last_reply; set_last_reply(user_id, reply)
+    await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
 
 
 async def on_program_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -214,9 +421,7 @@ async def on_program_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     logger.info("PROGRAM ACTION: user=%s data=%s", user_id, data)
 
-
     action = data.split(":", 1)[1] if ":" in data else ""
-
 
     if action == "new":
         progress_msg = await q.message.reply_text("Формирую для тебя другую программу…")
@@ -231,8 +436,9 @@ async def on_program_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await progress_msg.edit_text("Готово! Держи альтернативный вариант 🆕")
         await _send_program(update, user_id, plan)
+        LAST_REPLIES[user_id] = plan
+        from app.storage import set_last_reply; set_last_reply(user_id, plan)
         return
-
 
     if action == "restart":
         user_data = load_user_data(user_id)

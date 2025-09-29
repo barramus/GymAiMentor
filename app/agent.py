@@ -6,6 +6,7 @@ from typing import Optional
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
 from app.storage import load_user_data, save_user_data
+from app.weights import User as WUser, History as WHistory, recommend_start_weight, base_key
 
 GIGACHAT_MODEL: str = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Max").strip()
 GIGACHAT_TEMPERATURE: float = float(os.getenv("GIGACHAT_TEMPERATURE", "0.2"))
@@ -155,6 +156,10 @@ class FitnessAgent:
 
         cleaned = _strip_rpe(message.content)
         personalized = self._with_name_prefix(cleaned)
+        try:
+            personalized = self._annotate_plan_with_weights(personalized)
+        except Exception:
+            pass
 
         history = self.user_data.get("history", [])
         if user_input and user_input.strip():

@@ -1,6 +1,7 @@
 import json
 import os
 import copy
+import time
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -14,10 +15,13 @@ DEFAULT_USER_DATA: Dict[str, Any] = {
         "weight": None,
         "goal": None,
         "restrictions": None,
-        "schedule": None,
         "level": None,
-        "target": None,
     },
+    "lifts": {},
+    "last_reply": None,
+    "schedule": None,
+    "level": None,
+    "target": None,
     "physical_data_completed": False,
     "last_program": "",
     "programs": [],
@@ -90,3 +94,41 @@ def set_user_name(user_id: str, name: Optional[str], folder: str = "data/users")
     data["physical_data"]["name"] = name
     save_user_data(user_id, data, folder)
     return data
+
+
+def get_lift_history(user_id: str, lift_key: str, folder: str = "data/users"):
+    data = load_user_data(user_id, folder)
+    return (data.get("lifts") or {}).get(lift_key)
+
+def save_lift_history(user_id: str, lift_key: str, last_weight: float, reps: int, rir: int | None = None, folder: str = "data/users"):
+    data = load_user_data(user_id, folder)
+    entry = {
+        "ts": int(time.time()),
+        "last_weight": float(last_weight),
+        "reps": int(reps),
+        "rir": None if rir is None else int(rir),
+    }
+    lifts = data.setdefault("lifts", {})
+    rec = lifts.get(lift_key) or {}
+    # обновим последние значения
+    rec["last_weight"] = entry["last_weight"]
+    rec["reps"] = entry["reps"]
+    rec["rir"] = entry["rir"]
+    # допишем историю
+    hist = rec.get("history") or []
+    hist.append(entry)
+    rec["history"] = hist[-50:]  # храним последние 50 записей на всякий
+    lifts[lift_key] = rec
+    data["lifts"] = lifts
+    save_user_data(user_id, data, folder)
+    return data["lifts"][lift_key]
+
+def set_last_reply(user_id: str, text: str, folder: str = "data/users"):
+    data = load_user_data(user_id, folder)
+    data["last_reply"] = text
+    save_user_data(user_id, data, folder)
+    return text
+
+def get_last_reply(user_id: str, folder: str = "data/users"):
+    data = load_user_data(user_id, folder)
+    return data.get("last_reply")
