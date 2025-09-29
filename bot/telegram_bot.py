@@ -25,7 +25,7 @@ from app.storage import (
 )
 from app.weights import base_key
 
-__version__ = "tg-bot-1.3.0"
+__version__ = "tg-bot-1.3.1"
 logger = logging.getLogger("bot.telegram_bot")
 
 
@@ -50,23 +50,27 @@ GENDER_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 LEVEL_CHOICES = ["🚀 Начинающий", "🔥 Опытный"]
-LEVEL_KEYBOARD = ReplyKeyboardMarkup(
-    [LEVEL_CHOICES],
-    resize_keyboard=True,
-    one_time_keyboard=True,
-)
 
 START_KEYBOARD = ReplyKeyboardMarkup([["/start"]], resize_keyboard=True)
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["📋 Другая программа", "🔁 Начать заново"],
-        ["💾 Сохранить в файл", "📝 Записать тренировку"],
-        ["📈 Моя динамика"],
+        ["❓ Задать вопрос AI-тренеру"],
+        ["📝 Записать тренировку", "📈 Моя динамика"],
+        ["💾 Сохранить в файл", "🔁 Начать заново"],
     ],
     resize_keyboard=True,
     is_persistent=True,
 )
+
+
+
+async def _send_main_menu(update: Update):
+    """Отдельным сообщением — чтобы панель была постоянной."""
+    await update.effective_chat.send_message(
+        "Что дальше? Выбери действие в меню ниже 👇",
+        reply_markup=MAIN_KEYBOARD,
+    )
 
 
 def _normalize_name(raw: str) -> str:
@@ -75,11 +79,13 @@ def _normalize_name(raw: str) -> str:
         name = name[:80]
     return name
 
+
 def sanitize_for_tg(text: str) -> str:
     """Убираем HTML-теги и <br> → обычные переносы строк."""
     text = re.sub(r"\s*<br\s*/?>\s*", "\n", text)
     text = re.sub(r"</?p\s*/?>", "\n", text)
     return text.strip()
+
 
 def normalize_gender(text: str) -> Optional[str]:
     t = (text or "").strip().lower()
@@ -89,11 +95,13 @@ def normalize_gender(text: str) -> Optional[str]:
         return "мужской"
     return None
 
+
 async def _ask_goal_with_name(update: Update, name: str):
     await update.message.reply_text(
         f"{name}, выбери свою цель тренировок ⬇️",
         reply_markup=GOAL_KEYBOARD,
     )
+
 
 def _program_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -105,13 +113,17 @@ def _program_menu() -> InlineKeyboardMarkup:
         ]
     )
 
+
 async def _send_program(update: Update, user_id: str, text: str):
+    """Отправляем программу и сразу выводим постоянное меню."""
     await update.effective_chat.send_message(
         text,
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_program_menu(),
         disable_web_page_preview=True,
     )
+    await _send_main_menu(update)
+
 
 
 async def _save_last_to_file(update: Update, user_id: str):
@@ -121,8 +133,8 @@ async def _save_last_to_file(update: Update, user_id: str):
     if not text.strip():
         await update.message.reply_text(
             "Пока нечего сохранять. Сначала запроси программу или задай вопрос.",
-            reply_markup=MAIN_KEYBOARD,
         )
+        await _send_main_menu(update)
         return
 
     ts = int(time.time())
@@ -137,9 +149,13 @@ async def _save_last_to_file(update: Update, user_id: str):
             filename=fname,
             caption="Файл с твоим последним ответом",
         )
+    await _send_main_menu(update)
+
+
 
 def _normalize_piece_name(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip().lower())
+
 
 async def _parse_and_save_log(update: Update, user_id: str, text: str):
     """
@@ -178,18 +194,19 @@ async def _parse_and_save_log(update: Update, user_id: str, text: str):
         msg = "✅ Сохранил:\n" + "\n".join(
             [f"• {n} — {int(w) if float(w).is_integer() else round(float(w),1)}×{r}" for n, w, r in saved]
         )
-        await update.message.reply_text(msg, reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(msg)
 
     if errors and not saved:
         await update.message.reply_text(
             "Не понял формат для:\n" + "\n".join([f"• {e}" for e in errors]) + "\n\nПример: присед 50×8",
-            reply_markup=MAIN_KEYBOARD,
         )
     elif errors:
         await update.message.reply_text(
             "Не распознал часть записей:\n" + "\n".join([f"• {e}" for e in errors]) + "\nПример: жим лёжа 35×10",
-            reply_markup=MAIN_KEYBOARD,
         )
+
+    await _send_main_menu(update)
+
 
 _NAME_BY_KEY = {
     "squat": "Приседания",
@@ -202,14 +219,15 @@ _NAME_BY_KEY = {
     "leg_press": "Жим ногами",
 }
 
+
 async def _send_dynamics(update: Update, user_id: str):
     data = load_user_data(user_id)
     lifts = data.get("lifts") or {}
     if not lifts:
         await update.message.reply_text(
             "Пока нет записей. Нажми «📝 Записать тренировку» и пришли результаты.",
-            reply_markup=MAIN_KEYBOARD,
         )
+        await _send_main_menu(update)
         return
 
     lines = ["Твоя динамика (последние записи):"]
@@ -231,7 +249,9 @@ async def _send_dynamics(update: Update, user_id: str):
             )
         else:
             lines.append(f"• {name}: есть записи, но не распознан формат.")
-    await update.message.reply_text("\n".join(lines), reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text("\n".join(lines))
+    await _send_main_menu(update)
+
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -248,12 +268,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_states.get(user_id, {"mode": None, "step": 0, "data": {}})
 
+    # --- Кнопки главного меню ---
     if text == "❓ Задать вопрос AI-тренеру":
         user_states[user_id] = {"mode": "qa", "step": 0, "data": {}}
-        await update.message.reply_text(
-            "Задай вопрос по тренировкам 👇",
-            reply_markup=MAIN_KEYBOARD,
-        )
+        await update.message.reply_text("Задай вопрос по тренировкам 👇")
+        await _send_main_menu(update)
         return
 
     if text == "📈 Моя динамика":
@@ -263,12 +282,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "📝 Записать тренировку":
         user_states[user_id] = {"mode": "log", "step": 0, "data": {}}
         await update.message.reply_text(
-            "Пришли результаты в рабочих подходах в формате (где \"50\" — вес отягощения, а \"8\" — количество повторений):\n"
+            "Пришли результаты в рабочих подходах в формате (где «50» — вес, «8» — повторы):\n"
             "`присед 50×8, жим лёжа 35×10`\n"
             "Можно одной строкой или несколькими сообщениями.",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=MAIN_KEYBOARD,
         )
+        await _send_main_menu(update)
         return
 
     if text == "💾 Сохранить в файл":
@@ -279,10 +298,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data["physical_data"] = {"name": name}
         user_data["physical_data_completed"] = False
         save_user_data(user_id, user_data)
-        await update.message.reply_text(
-            "Начнём заново! Как тебя зовут?",
-            reply_markup=MAIN_KEYBOARD,
-        )
+        await update.message.reply_text("Начнём заново! Как тебя зовут?")
+        await _send_main_menu(update)
         user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
         return
 
@@ -292,10 +309,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             plan = await agent.get_response("")
         except Exception:
-            await update.message.reply_text(
-                "Не удалось сгенерировать программу. Попробуй позже.",
-                reply_markup=MAIN_KEYBOARD,
-            )
+            await update.message.reply_text("Не удалось сгенерировать программу. Попробуй позже.")
+            await _send_main_menu(update)
             return
         plan = sanitize_for_tg(plan)
         await _send_program(update, user_id, plan)
@@ -388,8 +403,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Сейчас не удалось сгенерировать программу. Попробуй ещё раз чуть позже.",
                 reply_markup=START_KEYBOARD,
             )
+            await _send_main_menu(update)
             return
 
+        plan = sanitize_for_tg(plan)
         await _send_program(update, user_id, plan)
         LAST_REPLIES[user_id] = plan
         from app.storage import set_last_reply; set_last_reply(user_id, plan)
@@ -408,7 +425,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = sanitize_for_tg(reply)
     LAST_REPLIES[user_id] = reply
     from app.storage import set_last_reply; set_last_reply(user_id, reply)
-    await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
+
+    await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
+    await _send_main_menu(update)
+
 
 
 async def on_program_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -435,6 +455,7 @@ async def on_program_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await progress_msg.edit_text("Готово! Держи альтернативный вариант 🆕")
+        plan = sanitize_for_tg(plan)
         await _send_program(update, user_id, plan)
         LAST_REPLIES[user_id] = plan
         from app.storage import set_last_reply; set_last_reply(user_id, plan)
@@ -454,6 +475,8 @@ async def on_program_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.message.reply_text("Начнём заново! Как тебя зовут?")
             user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
+        await _send_main_menu(update)
         return
+
 
 __all__ = ["handle_message", "on_program_action", "user_states", "GOAL_KEYBOARD"]
