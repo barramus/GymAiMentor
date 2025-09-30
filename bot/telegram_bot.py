@@ -1,4 +1,3 @@
-# bot/telegram_bot.py
 LAST_REPLIES: dict[str, str] = {}
 
 import os
@@ -12,6 +11,7 @@ from typing import Optional, Dict
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
@@ -20,14 +20,14 @@ from app.agent import FitnessAgent
 from app.storage import (
     load_user_data,
     save_user_data,
+    save_lift_history,
 )
+from app.weights import base_key
 
-__version__ = "tg-bot-1.3.3"
+__version__ = "tg-bot-1.3.2"
 logger = logging.getLogger("bot.telegram_bot")
 
 user_states: Dict[str, dict] = {}
-
-# --- Клавиатуры ---
 
 GOAL_MAPPING = {
     "🏃‍♂️ Похудеть": "похудение",
@@ -50,25 +50,26 @@ GENDER_KEYBOARD = ReplyKeyboardMarkup(
 LEVEL_CHOICES = ["🚀 Начинающий", "🔥 Опытный"]
 START_KEYBOARD = ReplyKeyboardMarkup([["/start"]], resize_keyboard=True)
 
-# Основное меню (упростили — без записи тренировок)
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["❓ Задать вопрос AI-тренеру"],
-        ["📋 Другая программа"],
-        ["💾 Сохранить в файл"],
+        ["📄 Другая программа", "💾 Сохранить в файл"],
         ["🔁 Начать заново"],
     ],
     resize_keyboard=True,
     is_persistent=True,
 )
 
-# --- Сервисные функции ---
+def _completed_kb(completed: bool):
+    """Возвращаем клавиатуру или удаляем её до завершения анкеты/первой программы."""
+    return MAIN_KEYBOARD if completed else ReplyKeyboardRemove()
 
-async def _send_main_menu(update: Update) -> None:
-    await update.effective_chat.send_message(
-        "Что дальше? Выбери действие в меню ниже 👇",
-        reply_markup=MAIN_KEYBOARD,
-    )
+async def _send_main_menu(update: Update, completed: bool):
+    if completed:
+        await update.effective_chat.send_message(
+            "Что дальше? Выбери действие в меню ниже 👇",
+            reply_markup=MAIN_KEYBOARD,
+        )
 
 def _normalize_name(raw: str) -> str:
     name = (raw or "").strip()
@@ -99,9 +100,8 @@ async def _send_program(update: Update, user_id: str, text: str):
         parse_mode=ParseMode.MARKDOWN,
         disable_web_page_preview=True,
     )
-    await _send_main_menu(update)
 
-# --- Файл с последним ответом ---
+    await _send_main_menu(update, completed=True)
 
 async def _save_last_to_file(update: Update, user_id: str):
     from app.storage import get_last_reply
@@ -110,7 +110,6 @@ async def _save_last_to_file(update: Update, user_id: str):
     if not text.strip():
         await update.message.reply_text(
             "Пока нечего сохранять. Сначала запроси программу или задай вопрос.",
-            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -127,7 +126,6 @@ async def _save_last_to_file(update: Update, user_id: str):
             caption="Файл с твоим последним ответом",
         )
 
-# --- Главный обработчик сообщений ---
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -143,36 +141,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_states.get(user_id, {"mode": None, "step": 0, "data": {}})
 
-    # вход в режим Q&A
     if text == "❓ Задать вопрос AI-тренеру":
+        if not completed:
+            await update.message.reply_text(
+                "Давай сначала завершим анкету и получим первую программу. После этого я отвечу на любые вопросы.",
+                reply_markup=_completed_kb(completed),
+            )
+            return
         user_states[user_id] = {"mode": "qa", "step": 0, "data": {}}
         await update.message.reply_text("Задай вопрос по тренировкам 👇", reply_markup=MAIN_KEYBOARD)
         return
 
-    # если уже в режиме Q&A — отвечаем кратко и остаёмся в режиме
     if state.get("mode") == "qa":
         agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
-        answer = await agent.get_answer(text)
+        try:
+            answer = await agent.get_answer(text)
+        except Exception:
+            logger.exception("QA failed")
+            await update.message.reply_text("Не получилось ответить сейчас. Попробуй ещё раз чуть позже.", reply_markup=MAIN_KEYBOARD)
+            return
         user_data.setdefault("history", []).append(("🧍 " + text, "🤖 " + answer))
         save_user_data(user_id, user_data)
         await update.message.reply_text(answer, parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
         return
 
-    # --- Кнопки главного меню ---
-    if text == "💾 Сохранить в файл":
-        await _save_last_to_file(update, user_id)
-        return
-
-    if text == "🔁 Начать заново":
-        user_data["physical_data"] = {"name": name}
-        user_data["physical_data_completed"] = False
-        save_user_data(user_id, user_data)
-        await update.message.reply_text("Начнём заново! Как тебя зовут?", reply_markup=MAIN_KEYBOARD)
-        user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
-        return
-
-    if text == "📋 Другая программа":
-        user_states[user_id] = {"mode": None, "step": 0, "data": {}}
+    if text == "📄 Другая программа":
+        if not completed:
+            await update.message.reply_text("Сначала завершим анкету и сформируем первую программу.")
+            return
         agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
         try:
             plan = await agent.get_response("")
@@ -185,7 +181,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from app.storage import set_last_reply; set_last_reply(user_id, plan)
         return
 
-    # --- Опросник ---
+    if text == "💾 Сохранить в файл":
+        await _save_last_to_file(update, user_id)
+        return
+
+    if text == "🔁 Начать заново":
+        user_data["physical_data"] = {"name": name}
+        user_data["physical_data_completed"] = False
+        save_user_data(user_id, user_data)
+        user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
+        await update.message.reply_text("Начнём заново! Как тебя зовут?", reply_markup=ReplyKeyboardRemove())
+        return
+
 
     if text in GOAL_MAPPING:
         user_states[user_id] = {"mode": "awaiting_gender", "step": 0, "data": {"target": GOAL_MAPPING[text]}}
@@ -194,14 +201,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state.get("mode") == "awaiting_name":
         if not text:
-            await update.message.reply_text("Пожалуйста, напиши своё имя одним сообщением.", reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text("Пожалуйста, напиши своё имя одним сообщением.")
             return
-        name = _normalize_name(text)
-        physical_data["name"] = name
+        physical_data["name"] = _normalize_name(text)
         user_data["physical_data"] = physical_data
         save_user_data(user_id, user_data)
         user_states[user_id] = {"mode": None, "step": 0, "data": {}}
-        await _ask_goal_with_name(update, name)
+        await _ask_goal_with_name(update, physical_data["name"])
         return
 
     if state.get("mode") == "awaiting_gender":
@@ -211,7 +217,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         state["data"]["gender"] = g
         user_states[user_id] = {"mode": "survey", "step": 2, "data": state["data"]}
-        await update.message.reply_text("Сколько тебе лет?", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Сколько тебе лет?", reply_markup=ReplyKeyboardRemove())
         return
 
     questions = [
@@ -231,7 +237,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             next_idx = state["step"] - 1
             _next_key, next_text = questions[next_idx]
             user_states[user_id] = {"mode": "survey", "step": state["step"] + 1, "data": state["data"]}
-            await update.message.reply_text(next_text, reply_markup=MAIN_KEYBOARD)
+            await update.message.reply_text(next_text)
             return
 
         user_states[user_id] = {"mode": "awaiting_level", "step": 0, "data": state["data"]}
@@ -258,19 +264,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         base_physical.update(finished_data)
         user_data["physical_data"] = base_physical
         user_data["physical_data_completed"] = True
+        user_data.setdefault("history", [])
         save_user_data(user_id, user_data)
 
-        await update.message.reply_text("Спасибо! Формирую твою персональную программу…", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Спасибо! Формирую твою персональную программу…", reply_markup=ReplyKeyboardRemove())
 
         agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
         try:
             plan = await agent.get_response("")
         except Exception:
             logger.exception("Ошибка генерации программы")
-            await update.message.reply_text(
-                "Сейчас не удалось сгенерировать программу. Попробуй ещё раз чуть позже.",
-                reply_markup=START_KEYBOARD,
-            )
+            await update.message.reply_text("Сейчас не удалось сгенерировать программу. Попробуй ещё раз чуть позже.", reply_markup=START_KEYBOARD)
             return
 
         plan = sanitize_for_tg(plan)
@@ -279,18 +283,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from app.storage import set_last_reply; set_last_reply(user_id, plan)
         return
 
-    # --- Обычный текст: генерация программы или ответа ---
-    agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
-    reply = await agent.get_response(text)
-    user_data.setdefault("history", []).append(("🧍 " + text, "🤖 " + reply))
-    save_user_data(user_id, user_data)
 
-    reply = sanitize_for_tg(reply)
-    LAST_REPLIES[user_id] = reply
-    from app.storage import set_last_reply; set_last_reply(user_id, reply)
-
-    await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
-    await _send_main_menu(update)
-
-
-__all__ = ["handle_message", "user_states", "GOAL_KEYBOARD"]
+    if completed:
+        agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
+        reply = await agent.get_response(text)
+        user_data.setdefault("history", []).append(("🧍 " + text, "🤖 " + reply))
+        save_user_data(user_id, user_data)
+        reply = sanitize_for_tg(reply)
+        LAST_REPLIES[user_id] = reply
+        from app.storage import set_last_reply; set_last_reply(user_id, reply)
+        await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
+    else:
+        await update.message.reply_text("Давай закончим анкету — так я смогу составить программу.")

@@ -14,14 +14,12 @@ from app.weights import (
     base_key,
 )
 
-# --- Параметры GigaChat из .env ---
 GIGACHAT_MODEL: str = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Max").strip()
 GIGACHAT_TEMPERATURE: float = float(os.getenv("GIGACHAT_TEMPERATURE", "0.2"))
 GIGACHAT_MAX_TOKENS: int = int(os.getenv("GIGACHAT_MAX_TOKENS", "2000"))
 GIGACHAT_TIMEOUT: int = int(os.getenv("GIGACHAT_TIMEOUT", "60"))
 GIGACHAT_RETRIES: int = int(os.getenv("GIGACHAT_RETRIES", "3"))
 
-# --- Нормализация вывода (убираем RPE/RIR/«до отказа», правим маркеры) ---
 _RPE_PATTERNS = [
     r"\(?\s*RPE\s*=?\s*\d+(?:\s*-\s*\d+)?\s*\)?",
     r"\(?\s*RIR\s*=?\s*\d+(?:\s*-\s*\d+)?\s*\)?",
@@ -29,12 +27,13 @@ _RPE_PATTERNS = [
     r"\bпочти\s+до\s+отказа\b",
 ]
 
+
 def _strip_rpe(text: str) -> str:
     out = text
     for p in _RPE_PATTERNS:
         out = re.sub(p, "", out, flags=re.IGNORECASE)
-    out = re.sub(r"^\s*•\s+", "- ", out, flags=re.MULTILINE)       # bullets → "-"
-    out = re.sub(r"(\d)\s*[xX\*]\s*(\d)", r"\1×\2", out)           # 3x12 → 3×12
+    out = re.sub(r"^\s*•\s+", "- ", out, flags=re.MULTILINE)
+    out = re.sub(r"(\d)\s*[xX\*]\s*(\d)", r"\1×\2", out)
     out = re.sub(r"\(\s*\)", "", out)
     out = re.sub(r",\s*,", ", ", out)
     out = re.sub(r"[ \t]{2,}", " ", out)
@@ -42,6 +41,7 @@ def _strip_rpe(text: str) -> str:
     out = re.sub(r"\n[ \t]+", "\n", out)
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
+
 
 def _to_int(s: str | int | None) -> Optional[int]:
     if s is None:
@@ -61,7 +61,6 @@ class FitnessAgent:
         physical_data = self.user_data.get("physical_data", {}) or {}
         self._user_name: Optional[str] = (physical_data.get("name") or "").strip() or None
 
-        # — жёсткие требования с учётом анкеты (дни/кол-во упражнений) —
         level = (physical_data.get("level") or "").strip().lower()
         days = _to_int(physical_data.get("schedule"))
         per_day = "5–7" if level == "опытный" else "4–5"
@@ -69,7 +68,8 @@ class FitnessAgent:
         if days:
             strict_block.append(f"• Сделай РОВНО {days} тренировочных дней в неделю.")
         strict_block.append(f"• В каждом дне перечисли {per_day} силовых упражнений (не считая разминку и заминку).")
-        strict_block.append("• Не используй HTML-теги (<br>, <p>) — только Markdown и обычные переносы строк.")
+        strict_block.append("• Если упражнений больше — сократи; если меньше — добавь.")
+        strict_block.append("• Не используй HTML-теги (<br>, <p>). Только Markdown и переносы строк.")
         strict_text = "\n".join(strict_block)
 
         physical_prompt = self._format_physical_data(physical_data)
@@ -79,21 +79,19 @@ class FitnessAgent:
                 Messages(
                     role=MessagesRole.SYSTEM,
                     content=(
-                        "Ты — персональный фитнес-тренер по бодибилдингу в тренажёрном зале с опытом 8+ лет. "
-                        "Пиши строго в формате Markdown, без приветствий и прощаний. "
-                        "Выход — только структурированный план без лишнего текста.\n\n"
-                        "Требования к оформлению:\n"
-                        "• Каждый день с новой строки и пустой строкой между днями.\n"
-                        "• Заголовок дня: **День N** (или **День N — часть тела**).\n"
-                        "• В начале каждого дня добавь короткую разминку (5–7 минут) и в конце заминку/растяжку (3–5 минут).\n"
-                        "• Упражнения — маркированный список, формат строки ровно такой:\n"
-                        "  - «Название — 3×12, отдых 90 сек.» (знак ×; тире «—» между названием и сеткой).\n"
-                        "• В конце плана добавь блок **Заметки по прогрессии** (как увеличивать вес/повторы).\n\n"
-                        "Содержательная часть:\n"
-                        "• Обязательно указывай подходы × повторы и отдых в секундах.\n"
-                        "• НЕ используй RPE/RIR и фразы «до отказа». Если нужен ориентир усилий — «лёгко/умеренно/тяжело».\n"
-                        "• Строй программу без уточняющих вопросов, используя данные анкеты.\n"
-                        "• Если тренировочных дней < 3 — объединяй группы мышц разумно; если 4+ — используй сплиты.\n"
+                        "Ты — персональный фитнес-тренер с опытом 8+ лет. "
+                        "Пиши строго в Markdown, без приветствий/прощаний. "
+                        "Выход — только структурированный план.\n\n"
+                        "Требования к формату:\n"
+                        "• **День N — часть тела**; между днями пустая строка.\n"
+                        "• В начале: разминка 5–7 мин; в конце: заминка/растяжка 3–5 мин.\n"
+                        "• Упражнения списком: «Название — 3×12, отдых 90 сек., усилие: умеренно».\n"
+                        "• В конце блок **Заметки по прогрессии**.\n\n"
+                        "Содержательно:\n"
+                        "• Всегда указывай подходы×повторы и отдых (сек).\n"
+                        "• НЕ используй RPE/RIR и «до отказа» — только «лёгко/умеренно/тяжело».\n"
+                        "• Строй программу по анкете без доп.вопросов. "
+                        "Если 4+ дня — делай сплит, если <3 — объединяй.\n"
                         f"\n{strict_text}\n"
                     ),
                 ),
@@ -104,8 +102,8 @@ class FitnessAgent:
             model=GIGACHAT_MODEL,
         )
 
-    # ---------- Q&A без генерации программ ----------
     async def get_answer(self, question: str) -> str:
+        """Краткий ответ на вопрос, без генерации программы и префиксов."""
         from asyncio import to_thread
         qa_payload = Chat(
             messages=[
@@ -113,7 +111,8 @@ class FitnessAgent:
                     role=MessagesRole.SYSTEM,
                     content=(
                         "Ты — персональный тренер. Отвечай по сути на вопросы о тренировках и питании. "
-                        "НЕ генерируй тренировочные программы. Без приветствий, по делу, кратко."
+                        "НЕ формируй тренировочные программы, не пиши приветствий/итогов. "
+                        "Кратко и по делу, можно пунктами."
                     ),
                 ),
                 Messages(role=MessagesRole.USER, content=question),
@@ -125,13 +124,15 @@ class FitnessAgent:
 
         def _chat_sync():
             with GigaChat(credentials=self.token, verify_ssl_certs=False, timeout=GIGACHAT_TIMEOUT) as giga:
-                resp = getattr(giga, "chat")(qa_payload, model=GIGACHAT_MODEL)
+                try:
+                    resp = giga.chat(qa_payload, model=GIGACHAT_MODEL)
+                except TypeError:
+                    resp = giga.chat(qa_payload)
                 return resp.choices[0].message.content
 
         txt = await to_thread(_chat_sync)
         return _strip_rpe(txt).strip()
 
-    # ---------- Служебные форматтеры ----------
     def _format_physical_data(self, data: dict) -> str:
         return (
             f"Цель: {data.get('target', 'не указана')}\n"
@@ -149,12 +150,10 @@ class FitnessAgent:
         name = (self._user_name or "").strip()
         return (f"{name}, обработал твой запрос — вот что получилось ⬇️\n\n" if name else "") + text
 
-    # ---------- Контекст для расчёта отягощений ----------
     def _weight_context(self) -> tuple[WUser, dict[str, WHistory]]:
         d = self.user_data or {}
         phys = (d.get("physical_data") or {})
 
-        # осторожно приводим к float
         weight_val = phys.get("weight")
         try:
             weight_kg = float(str(weight_val).replace(",", ".")) if weight_val is not None else None
@@ -170,7 +169,6 @@ class FitnessAgent:
             level=(phys.get("level") or "").lower() or None,
         )
 
-        # История может отсутствовать — это ок
         hist_raw = d.get("lifts") or {}
         history: dict[str, WHistory] = {}
         for k, rec in hist_raw.items():
@@ -181,11 +179,9 @@ class FitnessAgent:
                     rir=int(rec.get("rir")) if rec.get("rir") is not None else None,
                 )
             except Exception:
-                # пропускаем битые записи
                 continue
         return user, history
 
-    # ---------- Подстановка «рекомендация: ~Х кг» в план ----------
     def _annotate_plan_with_weights(self, text: str) -> str:
         """
         Ищем строки формата:
@@ -211,7 +207,6 @@ class FitnessAgent:
             key = base_key(_norm(ex_name)) or ""
 
             try:
-                # берём историю по ключу, если есть
                 hist = history.get(key)
                 rec_w, _source = recommend_start_weight(ex_name, user, target_reps, hist)
             except Exception:
@@ -226,7 +221,6 @@ class FitnessAgent:
 
         return "\n".join(out)
 
-    # ---------- Главный метод генерации программы / ответа ----------
     async def get_response(self, user_input: str) -> str:
         from asyncio import to_thread
 
@@ -273,7 +267,6 @@ class FitnessAgent:
         except Exception:
             pass
 
-        # Сохраняем историю диалога
         history = self.user_data.get("history", [])
         if user_input and user_input.strip():
             history.append(("🧍 " + user_input, "🤖 " + personalized))
