@@ -14,7 +14,6 @@ from telegram.ext import (
 from app.storage import load_user_data, save_user_data
 from bot.telegram_bot import (
     handle_message,
-    on_program_action,
     user_states,
     GOAL_KEYBOARD,
     MAIN_KEYBOARD,
@@ -90,9 +89,6 @@ def run_main():
     # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu))
-
-    # Колбэки инлайн-кнопок
-    app.add_handler(CallbackQueryHandler(on_program_action, pattern=r"^program:"))
 
     # Все текстовые сообщения (кроме команд)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
