@@ -1,3 +1,4 @@
+# app/agent.py
 import os
 import re
 import time
@@ -9,8 +10,7 @@ from gigachat.models import Chat, Messages, MessagesRole
 from app.storage import load_user_data, save_user_data
 from app.weights import (
     User as WUser,
-    History as WHistory,
-    recommend_start_weight,
+    recommend_weight_for_exercise,
     base_key,
 )
 
@@ -27,7 +27,6 @@ _RPE_PATTERNS = [
     r"\bпочти\s+до\s+отказа\b",
 ]
 
-
 def _strip_rpe(text: str) -> str:
     out = text
     for p in _RPE_PATTERNS:
@@ -42,7 +41,6 @@ def _strip_rpe(text: str) -> str:
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
 
-
 def _to_int(s: str | int | None) -> Optional[int]:
     if s is None:
         return None
@@ -51,48 +49,46 @@ def _to_int(s: str | int | None) -> Optional[int]:
     m = re.search(r"\d+", str(s))
     return int(m.group(0)) if m else None
 
-
 class FitnessAgent:
     def __init__(self, token: str, user_id: str):
         self.token = token
         self.user_id = user_id
         self.user_data = load_user_data(user_id)
 
-        physical_data = self.user_data.get("physical_data", {}) or {}
-        self._user_name: Optional[str] = (physical_data.get("name") or "").strip() or None
+        physical = self.user_data.get("physical_data") or {}
+        self._user_name: Optional[str] = (physical.get("name") or "").strip() or None
 
-        level = (physical_data.get("level") or "").strip().lower()
-        days = _to_int(physical_data.get("schedule"))
+        level = (physical.get("level") or "").strip().lower()
+        days = _to_int(physical.get("schedule"))
         per_day = "5–7" if level == "опытный" else "4–5"
-        strict_block = []
+        strict = []
         if days:
-            strict_block.append(f"• Сделай РОВНО {days} тренировочных дней в неделю.")
-        strict_block.append(f"• В каждом дне перечисли {per_day} силовых упражнений (не считая разминку и заминку).")
-        strict_block.append("• Если упражнений больше — сократи; если меньше — добавь.")
-        strict_block.append("• Не используй HTML-теги (<br>, <p>). Только Markdown и переносы строк.")
-        strict_text = "\n".join(strict_block)
+            strict.append(f"• Сделай РОВНО {days} тренировочных дней в неделю.")
+        strict.append(f"• В каждом дне перечисли {per_day} силовых упражнений.")
+        strict.append("• Не используй HTML-теги (<br>, <p>) — только Markdown и \\n.")
+        strict_text = "\n".join(strict)
 
-        physical_prompt = self._format_physical_data(physical_data)
+        physical_prompt = self._format_physical_data(physical)
 
         self.payload = Chat(
             messages=[
                 Messages(
                     role=MessagesRole.SYSTEM,
                     content=(
-                        "Ты — персональный фитнес-тренер с опытом 8+ лет. "
-                        "Пиши строго в Markdown, без приветствий/прощаний. "
+                        "Ты — персональный фитнес-тренер по бодибилдингу (8+ лет). "
+                        "Пиши СТРОГО Markdown, без приветствий и заключений. "
                         "Выход — только структурированный план.\n\n"
-                        "Требования к формату:\n"
-                        "• **День N — часть тела**; между днями пустая строка.\n"
-                        "• В начале: разминка 5–7 мин; в конце: заминка/растяжка 3–5 мин.\n"
-                        "• Упражнения списком: «Название — 3×12, отдых 90 сек., усилие: умеренно».\n"
+                        "Формат:\n"
+                        "• Каждый день с новой строки, между днями пустая строка.\n"
+                        "• Заголовок: **День N — часть тела**.\n"
+                        "• В начале дня разминка 5–7 мин, в конце заминка/растяжка 3–5 мин.\n"
+                        "• Упражнения — маркеры «- ». Одна строка: «Название — 3×12, отдых 90 сек., усилие: умеренно».\n"
                         "• В конце блок **Заметки по прогрессии**.\n\n"
-                        "Содержательно:\n"
-                        "• Всегда указывай подходы×повторы и отдых (сек).\n"
-                        "• НЕ используй RPE/RIR и «до отказа» — только «лёгко/умеренно/тяжело».\n"
-                        "• Строй программу по анкете без доп.вопросов. "
-                        "Если 4+ дня — делай сплит, если <3 — объединяй.\n"
-                        f"\n{strict_text}\n"
+                        "Ограничения:\n"
+                        "• Обязательно указывай подходы×повторы и отдых (сек).\n"
+                        "• Не используй RPE/RIR/«до отказа». Если нужно — пиши «лёгко/умеренно/тяжело».\n"
+                        "• Строй программу без уточняющих вопросов по анкете.\n"
+                        f"{strict_text}\n"
                     ),
                 ),
                 Messages(role=MessagesRole.USER, content=physical_prompt),
@@ -103,16 +99,16 @@ class FitnessAgent:
         )
 
     async def get_answer(self, question: str) -> str:
-        """Краткий ответ на вопрос, без генерации программы и префиксов."""
+        """Краткий ответ на вопрос; НЕ генерирует программы."""
         from asyncio import to_thread
         qa_payload = Chat(
             messages=[
                 Messages(
                     role=MessagesRole.SYSTEM,
                     content=(
-                        "Ты — персональный тренер. Отвечай по сути на вопросы о тренировках и питании. "
-                        "НЕ формируй тренировочные программы, не пиши приветствий/итогов. "
-                        "Кратко и по делу, можно пунктами."
+                        "Ты — персональный тренер. Отвечай по сути на вопросы "
+                        "о тренировках и питании. НЕ формируй тренировочные планы, "
+                        "не используй приветствия/завершения. Пиши кратко."
                     ),
                 ),
                 Messages(role=MessagesRole.USER, content=question),
@@ -123,102 +119,74 @@ class FitnessAgent:
         )
 
         def _chat_sync():
+            # В SDK есть версии с сигнатурой chat(payload) — используем её.
             with GigaChat(credentials=self.token, verify_ssl_certs=False, timeout=GIGACHAT_TIMEOUT) as giga:
-                try:
-                    resp = giga.chat(qa_payload, model=GIGACHAT_MODEL)
-                except TypeError:
-                    resp = giga.chat(qa_payload)
+                resp = getattr(giga, "chat")(qa_payload)
                 return resp.choices[0].message.content
 
         txt = await to_thread(_chat_sync)
         return _strip_rpe(txt).strip()
 
-    def _format_physical_data(self, data: dict) -> str:
+    def _format_physical_data(self, d: dict) -> str:
         return (
-            f"Цель: {data.get('target', 'не указана')}\n"
-            f"Пол: {data.get('gender', 'не указано')}\n"
-            f"Возраст: {data.get('age', 'не указано')} лет\n"
-            f"Рост: {data.get('height', 'не указано')} см\n"
-            f"Текущий вес: {data.get('weight', 'не указано')} кг\n"
-            f"Желаемый вес: {data.get('goal', 'не указано')} кг\n"
-            f"Ограничения: {data.get('restrictions', 'нет')}\n"
-            f"Частота тренировок: {data.get('schedule', 'не указано')}\n"
-            f"Уровень подготовки: {data.get('level', 'не указано')}"
+            f"Цель: {d.get('target', 'не указана')}\n"
+            f"Пол: {d.get('gender', 'не указано')}\n"
+            f"Возраст: {d.get('age', 'не указано')} лет\n"
+            f"Рост: {d.get('height', 'не указано')} см\n"
+            f"Текущий вес: {d.get('weight', 'не указано')} кг\n"
+            f"Желаемый вес: {d.get('goal', 'не указано')} кг\n"
+            f"Ограничения: {d.get('restrictions', 'нет')}\n"
+            f"Частота тренировок: {d.get('schedule', 'не указано')}\n"
+            f"Уровень подготовки: {d.get('level', 'не указано')}"
         )
 
     def _with_name_prefix(self, text: str) -> str:
         name = (self._user_name or "").strip()
         return (f"{name}, обработал твой запрос — вот что получилось ⬇️\n\n" if name else "") + text
 
-    def _weight_context(self) -> tuple[WUser, dict[str, WHistory]]:
-        d = self.user_data or {}
-        phys = (d.get("physical_data") or {})
-
-        weight_val = phys.get("weight")
-        try:
-            weight_kg = float(str(weight_val).replace(",", ".")) if weight_val is not None else None
-        except Exception:
-            weight_kg = None
-
-        user = WUser(
+    def _weight_context_user(self) -> WUser:
+        phys = (self.user_data.get("physical_data") or {})
+        def _flt(v):
+            try:
+                return float(str(v).replace(",", ".")) if v is not None else None
+            except Exception:
+                return None
+        return WUser(
             gender=(phys.get("gender") or "").lower() or None,
             age=_to_int(phys.get("age")),
-            height=_to_int(phys.get("height")),
-            weight=weight_kg,
-            goal=(phys.get("target") or "").lower() or None,
+            height_cm=_to_int(phys.get("height")),
+            weight_kg=_flt(phys.get("weight")),
             level=(phys.get("level") or "").lower() or None,
+            target=(phys.get("target") or "").lower() or None,
         )
 
-        hist_raw = d.get("lifts") or {}
-        history: dict[str, WHistory] = {}
-        for k, rec in hist_raw.items():
-            try:
-                history[k] = WHistory(
-                    last_weight=float(rec.get("last_weight")) if rec.get("last_weight") is not None else None,
-                    reps=int(rec.get("reps")) if rec.get("reps") is not None else None,
-                    rir=int(rec.get("rir")) if rec.get("rir") is not None else None,
-                )
-            except Exception:
-                continue
-        return user, history
-
     def _annotate_plan_with_weights(self, text: str) -> str:
-        """
-        Ищем строки формата:
-          - <Название> — 3×12, отдых ...
-        и добавляем в хвост: ", рекомендация: ~Х кг".
-        """
-        user, history = self._weight_context()
+        """Добавляем в строки упражнений «, рекомендация: ~X кг» по анкете."""
+        user = self._weight_context_user()
 
         def _norm(s: str) -> str:
             s = s.lower().replace("ё", "е")
             return re.sub(r"\s+", " ", s).strip()
 
-        lines = text.splitlines()
         out = []
-        for ln in lines:
-            m = re.search(r"^\s*[-•]\s*(.+?)\s+—\s+(\d+)\s*×\s*(\d+)(?:[–-]\d+)?", ln)
+        for ln in text.splitlines():
+            m = re.search(r"^\s*[-•]\s*(.+?)\s+—\s+(\d+\s*×\s*\d+(?:–\d+)?)", ln)
             if not m:
                 out.append(ln)
                 continue
-
-            ex_name = m.group(1).strip()
-            target_reps = int(m.group(3))
-            key = base_key(_norm(ex_name)) or ""
-
+            raw_name = m.group(1)
+            if not base_key(_norm(raw_name)):
+                out.append(ln)
+                continue
             try:
-                hist = history.get(key)
-                rec_w, _source = recommend_start_weight(ex_name, user, target_reps, hist)
+                w, _src = recommend_weight_for_exercise(raw_name, user, target_reps=10, history=None)
             except Exception:
-                rec_w = None
-
-            if rec_w:
-                val = int(rec_w) if float(rec_w).is_integer() else round(float(rec_w), 1)
-                if "рекомендац" not in ln:
-                    ln = f"{ln}, рекомендация: ~{val} кг"
-
+                out.append(ln)
+                continue
+            val = int(w) if float(w).is_integer() else round(float(w), 1)
+            if "рекомендац" not in ln:
+                ln = f"{ln}, рекомендация: ~{val} кг"
             out.append(ln)
-
         return "\n".join(out)
 
     async def get_response(self, user_input: str) -> str:
@@ -238,16 +206,17 @@ class FitnessAgent:
                             timeout=GIGACHAT_TIMEOUT,
                             model=GIGACHAT_MODEL,
                         ) as giga:
-                            response = giga.chat(self.payload)
-                            return response.choices[0].message
+                            resp = giga.chat(self.payload)
+                            return resp.choices[0].message
                     except TypeError:
+                        # старые версии SDK без параметра model в chat()
                         with GigaChat(
                             credentials=self.token,
                             verify_ssl_certs=False,
                             timeout=GIGACHAT_TIMEOUT,
                         ) as giga:
-                            response = getattr(giga, "chat")(self.payload, model=GIGACHAT_MODEL)
-                            return response.choices[0].message
+                            resp = getattr(giga, "chat")(self.payload)
+                            return resp.choices[0].message
                 except Exception as e:
                     last_err = e
                     if attempt == GIGACHAT_RETRIES:
@@ -260,19 +229,13 @@ class FitnessAgent:
 
         cleaned = _strip_rpe(message.content)
         personalized = self._with_name_prefix(cleaned)
-
-        # Тихо пытаемся дополнить рекомендациями по весам
         try:
             personalized = self._annotate_plan_with_weights(personalized)
         except Exception:
             pass
 
-        history = self.user_data.get("history", [])
-        if user_input and user_input.strip():
-            history.append(("🧍 " + user_input, "🤖 " + personalized))
-        else:
-            history.append(("🧍 Запрос программы", "🤖 " + personalized))
-        self.user_data["history"] = history
+        hist = self.user_data.get("history", [])
+        hist.append(("🧍 Запрос" if not user_input else "🧍 " + user_input, "🤖 " + personalized))
+        self.user_data["history"] = hist
         save_user_data(self.user_id, self.user_data)
-
         return personalized
