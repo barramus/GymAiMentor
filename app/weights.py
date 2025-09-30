@@ -1,7 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple
-import math
 
 # Коэффициенты стартового веса как доля BW (новичок, опытный)
 COEFFS_BW = {
@@ -15,7 +14,7 @@ COEFFS_BW = {
     "leg_press":    (0.90, 1.30),
 }
 
-# Примитивный словарь алиасов для маппинга названия -> ключ
+# Алиасы для распознавания упражнений
 ALIAS: Dict[str, str] = {
     "присед": "squat", "приседания": "squat", "фронтальные приседания": "squat",
     "станов": "deadlift",
@@ -28,9 +27,9 @@ ALIAS: Dict[str, str] = {
 }
 
 # Шаги округления
-PLATE_STEP = 2.5   # штанга/блинами
-DB_STEP    = 1.0   # гантели
-MACHINE_STEP = 2.5 # тренажёры/блоки
+PLATE_STEP   = 2.5   # штанга/блины
+DB_STEP      = 1.0   # гантели
+MACHINE_STEP = 2.5   # тренажёры/блоки
 
 def round_to_step(x: float, step: float) -> float:
     if step <= 0:
@@ -70,6 +69,7 @@ def _goal_corr(goal: Optional[str]) -> float:
     return 1.0
 
 def estimate_1rm(weight: float, reps: int) -> float:
+    # Epley (простая и устойчивая): 1RM ≈ w * (1 + reps/30)
     return float(weight) * (1 + int(reps) / 30.0)
 
 def weight_for_reps_from_1rm(one_rm: float, target_reps: int) -> float:
@@ -81,14 +81,15 @@ def weight_for_reps_from_1rm(one_rm: float, target_reps: int) -> float:
 
 @dataclass
 class User:
+    # NB: имена полей синхронизированы с agent.py (_weight_context)
     gender: Optional[str]
     age: Optional[int]
-    height_cm: Optional[float] = None  # имя поля совпадает с agent.py (height_cm)
-    weight_kg: Optional[float] = None  # имя поля совпадает с agent.py (weight_kg)
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
     level: Optional[str] = None
-    target: Optional[str] = None       # "похудение"/"набор массы"/...
+    target: Optional[str] = None
 
-    # совместимость со старым кодом, если создавали как (height, weight, goal, level)
+    # Доп. совместимость со старыми именами (height/weight/goal)
     def __init__(
         self,
         gender: Optional[str],
@@ -108,16 +109,14 @@ class User:
 
 @dataclass
 class History:
-    # последняя зафиксированная «рабочая» попытка
     last_weight: Optional[float] = None
     reps: Optional[int] = None
     rir: Optional[int] = None
-    # опционально можно хранить подробную историю в app.storage
 
 def equipment_step(ex_name: str) -> float:
-    name = ex_name.lower()
-    if "гантел" in name: return DB_STEP
-    if any(k in name for k in ["блок", "тренаж", "кросс"]): return MACHINE_STEP
+    n = ex_name.lower()
+    if "гантел" in n: return DB_STEP
+    if any(k in n for k in ["блок", "тренаж", "кросс"]): return MACHINE_STEP
     return PLATE_STEP
 
 def base_key(ex_name: str) -> Optional[str]:
@@ -127,21 +126,20 @@ def base_key(ex_name: str) -> Optional[str]:
             return v
     return None
 
-# --------- Точная функция (с учётом упражнения/повторов/шага) ---------
-
-def recommend_weight_for_exercise(
+# ======= Основная функция, ожидаемая agent.py =======
+def recommend_start_weight(
     exercise_name: str,
     user: User,
     target_reps: int = 10,
     history: Optional[History] = None,
 ) -> Tuple[float, str]:
     """
-    Возвращает (вес, источник_оценки) для конкретного упражнения.
-    Учитывает шаг округления по снаряду.
+    Возвращает (вес_кг, источник_оценки).
+    Подпись и поведение согласованы с вызовом из agent.py.
     """
     step = equipment_step(exercise_name)
 
-    # 1) По истории => оценка 1RM => цель на target_reps
+    # 1) Если есть история — пересчитываем через 1RM до нужных повторов
     if history and history.last_weight and history.reps:
         try:
             one_rm = estimate_1rm(history.last_weight, history.reps)
@@ -150,64 +148,21 @@ def recommend_weight_for_exercise(
         except Exception:
             pass
 
-    # 2) От BW и уровня
+    # 2) Базовая оценка от BW с поправками
     key = base_key(exercise_name)
-    bw = float(user.weight_kg or 0)
+    bw = float(user.weight_kg or 0.0)
+
     if key and bw:
-        novice, experienced = COEFFS_BW.get(key, (0.3, 0.5))
+        novice, experienced = COEFFS_BW.get(key, (0.30, 0.50))
         base_coef = experienced if _level_idx(user.level) else novice
         w = bw * base_coef
     else:
-        # запасной вариант (если нет ключа или BW)
+        # запасной путь — если не узнали ключ или нет BW
         w = (bw or 60.0) * (0.25 if "гантел" in exercise_name.lower() else 0.4)
 
-    # корректировки
+    # индивидуальные поправки
     w *= _gender_corr(user.gender)
     w *= _age_corr(user.age)
     w *= _goal_corr(user.target)
 
     return round_to_step(w, step), "старт по антропометрии"
-
-# --------- Обёртка-совместимость для agent.py ---------
-
-def recommend_start_weight(
-    user: User,
-    history: Optional[History] = None,
-    key: Optional[str] = None,
-    target_reps: int = 10,
-    exercise_name: Optional[str] = None,
-) -> float:
-    """
-    Совместимо с вызовом в agent.py: recommend_start_weight(user, history_for_key).
-    Возвращает ТОЛЬКО число (кг).
-    Если известны exercise_name/ключ — используем их; иначе делаем оценку «по BW»
-    и округляем к PLATE_STEP.
-    """
-    # Если можем — используем точный путь
-    if exercise_name:
-        w, _ = recommend_weight_for_exercise(exercise_name, user, target_reps, history)
-        return float(w)
-
-    # Если есть история — работаем от неё (без знания шага снаряда)
-    if history and history.last_weight and history.reps:
-        try:
-            one_rm = estimate_1rm(history.last_weight, history.reps)
-            w = weight_for_reps_from_1rm(one_rm, target_reps)
-            return float(round_to_step(w, PLATE_STEP))
-        except Exception:
-            pass
-
-    # Без истории: от BW и ключа (если есть)
-    bw = float(user.weight_kg or 0.0)
-    if key and key in COEFFS_BW and bw:
-        novice, experienced = COEFFS_BW[key]
-        base_coef = experienced if _level_idx(user.level) else novice
-        w = bw * base_coef
-    else:
-        w = (bw or 60.0) * 0.4  # обобщённая оценка под «штангу»
-
-    w *= _gender_corr(user.gender)
-    w *= _age_corr(user.age)
-    w *= _goal_corr(user.target)
-
-    return float(round_to_step(w, PLATE_STEP))
