@@ -1,100 +1,20 @@
-# app/agent.py
 import os
 import re
 import time
-from typing import Optional, List
+from typing import Optional
 
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
 
 from app.storage import load_user_data, save_user_data
 
-# ------------------------- Конфиг -------------------------
-
 GIGACHAT_MODEL: str = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Max").strip()
-GIGACHAT_TEMPERATURE: float = float(os.getenv("GIGACHAT_TEMPERATURE", "0.2"))
+GIGACHAT_TEMPERATURE: float = float(os.getenv("GIGACHAT_TEMPERATURE", "0.25"))
 GIGACHAT_MAX_TOKENS: int = int(os.getenv("GIGACHAT_MAX_TOKENS", "2200"))
 GIGACHAT_TIMEOUT: int = int(os.getenv("GIGACHAT_TIMEOUT", "60"))
 GIGACHAT_RETRIES: int = int(os.getenv("GIGACHAT_RETRIES", "3"))
 
-# ------------------------- Утилиты пост-обработки -------------------------
-
-_RPE_PATTERNS = [
-    r"\(?\s*RPE\s*=?\s*\d+(?:\s*-\s*\d+)?\s*\)?",
-    r"\(?\s*RIR\s*=?\s*\d+(?:\s*-\s*\d+)?\s*\)?",
-    r"\bдо\s+отказа\b",
-    r"\bпочти\s+до\s+отказа\b",
-]
-
-def _strip_rpe(text: str) -> str:
-    """Убираем RPE/RIR/«до отказа», нормализуем маркеры и переносы."""
-    out = text
-    for p in _RPE_PATTERNS:
-        out = re.sub(p, "", out, flags=re.IGNORECASE)
-    # 3x12 -> 3×12
-    out = re.sub(r"(\d)\s*[xX\*]\s*(\d)", r"\1×\2", out)
-    # Пули в единый стиль
-    out = re.sub(r"^\s*[•\-]\s*", "- ", out, flags=re.MULTILINE)
-    # Подчистим пустые скобки и двойные запятые
-    out = re.sub(r"\(\s*\)", "", out)
-    out = re.sub(r",\s*,", ", ", out)
-    # Лишние пробелы у переносов
-    out = re.sub(r"[ \t]+\n", "\n", out)
-    out = re.sub(r"\n[ \t]+", "\n", out)
-    out = re.sub(r"\n{3,}", "\n\n", out)
-    return out.strip()
-
-def _strip_html_like(text: str) -> str:
-    """Скобочные HTML-теги -> переносы / ничего."""
-    out = re.sub(r"\s*<br\s*/?>\s*", "\n", text, flags=re.IGNORECASE)
-    out = re.sub(r"</?p\s*/?>", "\n", out, flags=re.IGNORECASE)
-    return out
-
-def _drop_hash_headings(text: str) -> str:
-    """
-    Телеграм иногда путается с # и ## в Markdown.
-    Переведём заголовки вида '# …' / '## …' в **полужирный**.
-    """
-    lines = text.splitlines()
-    fixed: List[str] = []
-    for ln in lines:
-        if re.match(r"^\s*#{1,6}\s+", ln):
-            title = re.sub(r"^\s*#{1,6}\s+", "", ln).strip()
-            if title:
-                fixed.append(f"**{title}**")
-            else:
-                fixed.append("")
-        else:
-            fixed.append(ln)
-    return "\n".join(fixed)
-
-def _sanitize(text: str) -> str:
-    out = _strip_html_like(text)
-    out = _strip_rpe(out)
-    out = _drop_hash_headings(out)
-    return out.strip()
-
-def _physical_context(d: dict) -> str:
-    """Компактный текст анкеты для подмешивания в запросы."""
-    phys = (d.get("physical_data") or {})
-    def g(k, default="не указано"):
-        v = phys.get(k)
-        return str(v).strip() if (v is not None and str(v).strip()) else default
-
-    return (
-        "Данные пользователя:\n"
-        f"- Цель: {g('target')}\n"
-        f"- Пол: {g('gender')}\n"
-        f"- Возраст: {g('age')}\n"
-        f"- Рост (см): {g('height')}\n"
-        f"- Текущий вес (кг): {g('weight')}\n"
-        f"- Желаемый вес (кг): {g('goal')}\n"
-        f"- Ограничения/предпочтения: {g('restrictions','нет')}\n"
-        f"- Частота тренировок (раз/нед): {g('schedule')}\n"
-        f"- Уровень: {g('level')}"
-    )
-
-# ------------------------- Промты -------------------------
+# ---------- промты ----------
 
 PLAN_SYSTEM_PROMPT = (
     "Ты — опытный персональный тренер по силовым тренировкам и бодибилдингу (опыт более 8 лет). "
@@ -176,126 +96,174 @@ QA_SYSTEM_PROMPT = (
 )
 
 
-# ------------------------- Класс агента -------------------------
+
+# ---------- чистка и нормализация ----------
+
+_RPE_PATTERNS = [
+    r"\(?\s*RPE\s*=?\s*\d+(?:\s*-\s*\d+)?\s*\)?",
+    r"\(?\s*RIR\s*=?\s*\d+(?:\s*-\s*\d+)?\s*\)?",
+    r"\bдо\s+отказа\b",
+    r"\bпочти\s+до\s+отказа\b",
+]
+
+def _strip_noise(text: str) -> str:
+    """Убираем RPE/RIR/«до отказа», лишние пробелы и #/## заголовки."""
+    out = text or ""
+    # RPE/RIR
+    for p in _RPE_PATTERNS:
+        out = re.sub(p, "", out, flags=re.IGNORECASE)
+
+    # заменить маркеры • на дефисы, x/* на ×
+    out = re.sub(r"^\s*•\s+", "- ", out, flags=re.MULTILINE)
+    out = re.sub(r"(\d)\s*[xX\*]\s*(\d)", r"\1×\2", out)
+
+    # убрать HTML теги <br>, <p>
+    out = re.sub(r"\s*<br\s*/?>\s*", "\n", out, flags=re.IGNORECASE)
+    out = re.sub(r"</?p\s*/?>", "\n", out, flags=re.IGNORECASE)
+
+    # убрать markdown заголовки # и ##
+    out = re.sub(r"^\s*#{1,6}\s*", "", out, flags=re.MULTILINE)
+
+    # косметика
+    out = re.sub(r"\(\s*\)", "", out)
+    out = re.sub(r",\s*,", ", ", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n[ \t]+", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+
+    return out.strip()
+
+def _to_int(s) -> Optional[int]:
+    try:
+        return int(re.search(r"\d+", str(s)).group(0))
+    except Exception:
+        return None
+
+# ---------- агент ----------
 
 class FitnessAgent:
     def __init__(self, token: str, user_id: str):
         self.token = token
         self.user_id = user_id
         self.user_data = load_user_data(user_id)
-        phys = (self.user_data.get("physical_data") or {})
+
+        phys = self.user_data.get("physical_data") or {}
         self._user_name: Optional[str] = (phys.get("name") or "").strip() or None
 
-    # ---------- Внутренний универсальный вызов GigaChat ----------
+        self._phys_prompt = self._format_physical_data(phys)
 
-    def _chat_call(self, payload: Chat):
+    # — публичные методы —
+
+    async def get_program(self, user_instruction: str = "") -> str:
         """
-        Унификация вызова SDK (в некоторых версиях chat(model=...) не поддерживается).
-        Делаем безопасные ретраи.
-        """
-        last_err = None
-        for attempt in range(1, GIGACHAT_RETRIES + 1):
-            try:
-                # Попытка №1: без передачи model в chat(...)
-                with GigaChat(
-                    credentials=self.token,
-                    verify_ssl_certs=False,
-                    timeout=GIGACHAT_TIMEOUT,
-                    model=GIGACHAT_MODEL,  # для некоторых версий достаточно задать при создании
-                ) as giga:
-                    try:
-                        resp = giga.chat(payload)
-                    except TypeError:
-                        # Альтернативный путь: передать model в метод
-                        resp = getattr(giga, "chat")(payload, model=GIGACHAT_MODEL)
-                return resp.choices[0].message.content
-            except Exception as e:
-                last_err = e
-                if attempt == GIGACHAT_RETRIES:
-                    raise
-                time.sleep(1.5 * attempt)
-        raise last_err or RuntimeError("GigaChat call failed")
-
-    # ---------- Пользовательские данные в начале ответа ----------
-
-    def _with_name_prefix(self, text: str) -> str:
-        name = (self._user_name or "").strip()
-        if not name:
-            return text
-        return f"{name}, вот что я подготовил ⬇️\n\n{text}"
-
-    # ---------- Ответ на произвольный вопрос / короткие планы ----------
-
-    async def get_answer(self, question: str) -> str:
-        """
-        «Живой» ответ. ВСЕГДА учитывает анкету.
-        Если просят план/программу — агент имеет право составить сжатый план (с весами и структурой).
+        Вернёт сгенерированную программу (Markdown), с учётом анкеты.
+        user_instruction — дополнительные пожелания (например: «сделай 5 дней»).
         """
         from asyncio import to_thread
-
-        physical = _physical_context(self.user_data)
-
         payload = Chat(
             messages=[
-                Messages(role=MessagesRole.SYSTEM, content=QA_SYSTEM_PROMPT),
-                Messages(role=MessagesRole.USER, content=f"{physical}\n\nВопрос/запрос:\n{question}"),
+                Messages(role=MessagesRole.SYSTEM, content=SYSTEM_PROMPT),
+                Messages(role=MessagesRole.USER, content=self._phys_prompt + (f"\n\nПожелания: {user_instruction}" if user_instruction else "")),
             ],
-            temperature=min(0.45, GIGACHAT_TEMPERATURE),
-            max_tokens=min(1200, GIGACHAT_MAX_TOKENS),
-            model=GIGACHAT_MODEL,
-        )
-
-        def _call():
-            return self._chat_call(payload)
-
-        raw = await to_thread(_call)
-        txt = _sanitize(raw)
-        # сохраняем историю переписки
-        hist = self.user_data.get("history", [])
-        hist.append(("🧍 " + question, "🤖 " + txt))
-        self.user_data["history"] = hist
-        save_user_data(self.user_id, self.user_data)
-        return txt
-
-    # ---------- Генерация полной программы ----------
-
-    async def get_response(self, user_input: str = "") -> str:
-        """
-        Полноценная программа силовых тренировок на основе анкеты.
-        `user_input` можно передать для уточнений (например, «нужен 5-дневный сплит»).
-        """
-        from asyncio import to_thread
-
-        physical = _physical_context(self.user_data)
-
-        messages = [
-            Messages(role=MessagesRole.SYSTEM, content=PLAN_SYSTEM_PROMPT),
-            Messages(role=MessagesRole.USER, content=physical),
-        ]
-        if user_input and user_input.strip():
-            messages.append(Messages(role=MessagesRole.USER, content=f"Дополнительные пожелания: {user_input}"))
-
-        payload = Chat(
-            messages=messages,
             temperature=GIGACHAT_TEMPERATURE,
             max_tokens=GIGACHAT_MAX_TOKENS,
             model=GIGACHAT_MODEL,
         )
 
-        def _call():
-            return self._chat_call(payload)
+        def _chat_sync():
+            last_err = None
+            for attempt in range(1, GIGACHAT_RETRIES + 1):
+                try:
+                    try:
+                        with GigaChat(
+                            credentials=self.token,
+                            verify_ssl_certs=False,
+                            timeout=GIGACHAT_TIMEOUT,
+                            model=GIGACHAT_MODEL,
+                        ) as giga:
+                            resp = giga.chat(payload)
+                            return resp.choices[0].message.content
+                    except TypeError:
+                        with GigaChat(
+                            credentials=self.token,
+                            verify_ssl_certs=False,
+                            timeout=GIGACHAT_TIMEOUT,
+                        ) as giga:
+                            resp = getattr(giga, "chat")(payload, model=GIGACHAT_MODEL)
+                            return resp.choices[0].message.content
+                except Exception as e:
+                    last_err = e
+                    if attempt == GIGACHAT_RETRIES:
+                        raise
+                    time.sleep(1.5 * attempt)
+            raise last_err or RuntimeError("GigaChat call failed")
 
-        raw = await to_thread(_call)
-        cleaned = _sanitize(raw)
-        personalized = self._with_name_prefix(cleaned)
+        txt = await to_thread(_chat_sync)
+        cleaned = _strip_noise(txt)
+        final = self._with_name_prefix(cleaned)
 
-        # История
+        # сохраняем в историю и как последнюю программу
         hist = self.user_data.get("history", [])
-        hist.append(("🧍 Запрос программы" if not user_input else "🧍 " + user_input, "🤖 " + personalized))
+        hist.append(("🧍 Запрос программы", "🤖 " + final))
         self.user_data["history"] = hist
-        # Последний ответ — для «Сохранить в файл»
-        self.user_data["last_reply"] = personalized
-        self.user_data["last_program"] = personalized
+        self.user_data["last_program"] = final
+        self.user_data["last_reply"] = final
         save_user_data(self.user_id, self.user_data)
+        return final
 
-        return personalized
+    async def get_answer(self, question: str) -> str:
+        """
+        Краткий структурированный ответ/совет. Если явно просят план — можно выдать план (учитывая анкету).
+        """
+        from asyncio import to_thread
+        payload = Chat(
+            messages=[
+                Messages(role=MessagesRole.SYSTEM, content=QA_SYSTEM_PROMPT),
+                Messages(role=MessagesRole.USER, content=f"Анкета:\n{self._phys_prompt}\n\nВопрос:\n{question}"),
+            ],
+            temperature=min(0.35, GIGACHAT_TEMPERATURE),
+            max_tokens=min(1000, GIGACHAT_MAX_TOKENS),
+            model=GIGACHAT_MODEL,
+        )
+
+        def _chat_sync():
+            try:
+                with GigaChat(credentials=self.token, verify_ssl_certs=False, timeout=GIGACHAT_TIMEOUT) as giga:
+                    try:
+                        resp = giga.chat(payload)  # новые SDK
+                    except TypeError:
+                        resp = getattr(giga, "chat")(payload, model=GIGACHAT_MODEL)  # старые SDK
+                    return resp.choices[0].message.content
+            except Exception as e:
+                raise e
+
+        txt = await to_thread(_chat_sync)
+        cleaned = _strip_noise(txt).strip()
+
+        # история
+        hist = self.user_data.get("history", [])
+        hist.append(("🧍 " + question, "🤖 " + cleaned))
+        self.user_data["history"] = hist
+        self.user_data["last_reply"] = cleaned
+        save_user_data(self.user_id, self.user_data)
+        return cleaned
+
+    # — утилиты —
+
+    def _format_physical_data(self, d: dict) -> str:
+        return (
+            f"Цель: {d.get('target') or 'не указана'}\n"
+            f"Пол: {d.get('gender') or 'не указано'}\n"
+            f"Возраст: {d.get('age') or 'не указано'} лет\n"
+            f"Рост: {d.get('height') or 'не указано'} см\n"
+            f"Текущий вес: {d.get('weight') or 'не указано'} кг\n"
+            f"Желаемый вес: {d.get('goal') or 'не указано'} кг\n"
+            f"Ограничения: {d.get('restrictions') or 'нет'}\n"
+            f"Частота тренировок: {d.get('schedule') or 'не указано'}\n"
+            f"Уровень: {d.get('level') or 'не указано'}"
+        )
+
+    def _with_name_prefix(self, text: str) -> str:
+        name = (self._user_name or "").strip()
+        return (f"{name}, вот твой план ⬇️\n\n" if name else "") + text
