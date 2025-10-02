@@ -138,7 +138,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Если анкета не завершена и нет активного режима — продолжаем/начинаем опрос
     if not completed and state.get("mode") is None:
-        name = (load_user_data.get("physical_data") or {}).get("name")
+        name = (data.get("physical_data") or {}).get("name")
         if not name:
             user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
             await update.message.reply_text("Как тебя зовут?")
