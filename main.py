@@ -2,7 +2,7 @@
 import os
 import logging
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 
 from app.storage import load_user_data, save_user_data
-from bot.telegram_bot import handle_message
+from bot.telegram_bot import user_states, GOAL_KEYBOARD, handle_message
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,15 +42,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["last_reply"] = None
     save_user_data(user_id, d)
 
+    user_states.pop(user_id, None)
+
+    if not name:
+        # Начинаем с имени
+        user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
+        await update.message.reply_text(
+            "Привет! Я твой персональный фитнес-тренер GymAiMentor 💪🏼\n"
+            "Давай настроим программу. Как тебя зовут?"
+        )
+        return
+
+    # Имя уже есть — сразу просим цель
+    user_states[user_id] = {"mode": None, "step": 0, "data": {}}
     await update.message.reply_text(
-        "Привет! Я твой персональный фитнес-тренер GymAiMentor 💪🏼\n"
-        "Я могу составить для тебя программу тренировок, а так же ответить на любые вопросы, связанные со спортом, питанием и восстановлением."
+        f"{name}, выбери свою цель тренировок ⬇️",
+        reply_markup=GOAL_KEYBOARD,
     )
-    # Делегируем дальше — handler сам начнёт с выбора цели
-    await handle_message(update, context)
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Делегируем в общий обработчик — он покажет актуальные кнопки/состояние
+    # просто прокидываем в общий handler — он покажет актуальные кнопки
     await handle_message(update, context)
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -61,15 +72,9 @@ def run_main():
         raise RuntimeError("Переменная окружения TELEGRAM_TOKEN не задана")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu))
-
-    # Все текстовые сообщения (кроме команд) — в общий обработчик логики
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Глобальный error handler
     app.add_error_handler(on_error)
 
     print("Бот запущен (polling).")

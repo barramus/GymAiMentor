@@ -136,6 +136,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_states.get(user_id) or {"mode": None, "step": 0, "data": {}}
 
+        # Если анкета не завершена и нет активного режима — продолжаем/начинаем опрос
+    if not completed and state.get("mode") is None:
+        name = (load_user_data.get("physical_data") or {}).get("name")
+        if not name:
+            user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
+            await update.message.reply_text("Как тебя зовут?")
+            return
+        # имя есть — ждём выбор цели
+        await update.message.reply_text(
+            f"{name}, выбери свою цель тренировок ⬇️",
+            reply_markup=GOAL_KEYBOARD,
+        )
+        return
+
+
     # 1) Жёсткая обработка кнопок (чтобы они НЕ попадали в Q&A)
     if text == "💾 Сохранить в файл":
         await _save_last_to_file(update, user_id)
