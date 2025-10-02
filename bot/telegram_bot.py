@@ -126,66 +126,70 @@ def _normalize_gender(text: str) -> Optional[str]:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
+
     user_id = str(update.effective_user.id)
     text = (update.message.text or "").strip()
 
+    # --- читаем данные пользователя ---
     data = load_user_data(user_id)
     phys = data.get("physical_data") or {}
     name = phys.get("name")
     completed = bool(data.get("physical_data_completed"))
-
     state = user_states.get(user_id) or {"mode": None, "step": 0, "data": {}}
 
-        # Если анкета не завершена и нет активного режима — продолжаем/начинаем опрос
+    # --- ЖЁСТКАЯ ОБРАБОТКА КНОПОК (не должны улетать в Q&A) ---
+    if text == "💾 Сохранить в файл":
+        await _save_last_to_file(update, user_id)
+        return
+
+    if text == "📋 Другая программа":
+        # генерим только другую программу на основе последней анкеты
+        await update.message.reply_text("Думаю над ответом на твой запрос…")
+        try:
+            agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
+            plan = await agent.get_program("")  # только программа!
+        except Exception:
+            logger.exception("Ошибка генерации альтернативной программы")
+            await update.message.reply_text("Не получилось сгенерировать программу. Попробуй ещё раз.")
+            return
+        plan = _sanitize_for_tg(plan)
+        await _safe_send(update.effective_chat, plan, use_markdown=True)
+        # если нужно — покажи меню: await _send_main_menu(update)
+        return
+
+    if text == "🔁 Начать заново":
+        # полный сброс анкеты и старт с цели (имя не спрашиваем)
+        data["physical_data"] = {"name": name}  # имя сохраняем, если было
+        data["physical_data_completed"] = False
+        save_user_data(user_id, data)
+        user_states[user_id] = {"mode": None, "step": 0, "data": {}}
+        await update.message.reply_text(
+            "Начинаем заново! Выбери свою цель тренировок ⬇️",
+            reply_markup=GOAL_KEYBOARD,
+        )
+        return
+
+    # --- ЕСЛИ АНКЕТА НЕ ЗАВЕРШЕНА и нет активного режима — начинаем/продолжаем опрос ---
     if not completed and state.get("mode") is None:
-        name = (data.get("physical_data") or {}).get("name")
         if not name:
             user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
             await update.message.reply_text("Как тебя зовут?")
             return
-        # имя есть — ждём выбор цели
+
+        # имя есть — просим выбрать цель
         await update.message.reply_text(
             f"{name}, выбери свою цель тренировок ⬇️",
             reply_markup=GOAL_KEYBOARD,
         )
         return
 
-
-    # 1) Жёсткая обработка кнопок (чтобы они НЕ попадали в Q&A)
-    if text == "💾 Сохранить в файл":
-        await _save_last_to_file(update, user_id)
-        return
-
-    if text == "🔁 Начать заново":
-        data["physical_data"] = {"name": name}  # сохраняем имя, остальное заново
-        data["physical_data_completed"] = False
-        save_user_data(user_id, data)
-        user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
-        await update.message.reply_text("Начнём заново! Как тебя зовут?")
-        return
-
-    if text == "📄 Другая программа":
-        await update.message.reply_text("Думаю над новой программой…")
-        agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
-        try:
-            plan = await agent.get_program("")  # генерим другой вариант без доп. инструкций
-        except Exception:
-            logger.exception("Ошибка генерации НОВОЙ программы")
-            await update.message.reply_text("Не удалось сгенерировать программу. Попробуй ещё раз.")
-            return
-        plan = _sanitize_for_tg(plan)
-        LAST_REPLIES[user_id] = plan
-        set_last_reply(user_id, plan)
-        await _safe_send(update.effective_chat, plan, use_markdown=True)
-        await _send_main_menu(update)
-        return
-
+    # --- вход в Q&A ---
     if text == "❓ Задать вопрос AI-тренеру":
         user_states[user_id] = {"mode": "qa", "step": 0, "data": {}}
         await update.message.reply_text("Задай вопрос по тренировкам/питанию 👇")
         return
 
-    # 2) Если уже в режиме Q&A — отвечаем и остаёмся там
+    # --- режим Q&A ---
     if state.get("mode") == "qa":
         agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
         answer = await agent.get_answer(text)
@@ -195,7 +199,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _safe_send(update.effective_chat, answer, use_markdown=True)
         return
 
-    # 3) Анкета
+    # --- Анкета ---
     if state.get("mode") == "awaiting_name":
         if not text:
             await update.message.reply_text("Напиши, пожалуйста, имя.")
@@ -204,11 +208,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["physical_data"] = phys
         save_user_data(user_id, data)
         user_states[user_id] = {"mode": None, "step": 0, "data": {}}
-        await update.message.reply_text(f"{phys['name']}, выбери свою цель тренировок ⬇️", reply_markup=GOAL_KEYBOARD)
+        await update.message.reply_text(
+            f"{phys['name']}, выбери свою цель тренировок ⬇️",
+            reply_markup=GOAL_KEYBOARD,
+        )
         return
 
     if text in GOAL_MAPPING:
-        user_states[user_id] = {"mode": "awaiting_gender", "step": 0, "data": {"target": GOAL_MAPPING[text]}}
+        user_states[user_id] = {
+            {"mode": "awaiting_gender", "step": 0, "data": {"target": GOAL_MAPPING[text]}}
+        }
         await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
         return
 
@@ -277,13 +286,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _send_main_menu(update)
         return
 
-    # 4) Если анкета ещё не начата — запустить её
+    # --- если анкета ещё не начата — запустить её ---
     if not completed:
         user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
         await update.message.reply_text("Как тебя зовут?")
         return
 
-    # 5) В остальном — считаем сообщение пожеланием к программе
+    # --- остальное трактуем как пожелания к плану ---
     agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
     try:
         plan = await agent.get_program(text)
