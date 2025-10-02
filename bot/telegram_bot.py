@@ -35,7 +35,7 @@ GOAL_KEYBOARD = ReplyKeyboardMarkup(
 GENDER_CHOICES = ["👩 Женский", "👨 Мужской"]
 GENDER_KEYBOARD = ReplyKeyboardMarkup([GENDER_CHOICES], resize_keyboard=True, one_time_keyboard=True)
 
-LEVEL_CHOICES = ["💤 Новичок", "🔥 Опытный"]
+LEVEL_CHOICES = ["🚀 Начинающий", "🔥 Опытный"]
 LEVEL_KEYBOARD = ReplyKeyboardMarkup([LEVEL_CHOICES], resize_keyboard=True, one_time_keyboard=True)
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
