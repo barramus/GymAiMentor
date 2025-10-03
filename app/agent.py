@@ -14,7 +14,6 @@ GIGACHAT_MAX_TOKENS: int = int(os.getenv("GIGACHAT_MAX_TOKENS", "2200"))
 GIGACHAT_TIMEOUT: int = int(os.getenv("GIGACHAT_TIMEOUT", "60"))
 GIGACHAT_RETRIES: int = int(os.getenv("GIGACHAT_RETRIES", "3"))
 
-# ---------- промты ----------
 
 SYSTEM_PROMPT = (
     "Ты — опытный персональный тренер по силовым тренировкам и бодибилдингу (опыт более 8 лет). "
@@ -97,8 +96,6 @@ QA_SYSTEM_PROMPT = (
 
 
 
-# ---------- чистка и нормализация ----------
-
 _RPE_PATTERNS = [
     r"\(?\s*RPE\s*=?\s*\d+(?:\s*-\s*\d+)?\s*\)?",
     r"\(?\s*RIR\s*=?\s*\d+(?:\s*-\s*\d+)?\s*\)?",
@@ -140,7 +137,6 @@ def _to_int(s) -> Optional[int]:
     except Exception:
         return None
 
-# ---------- агент ----------
 
 class FitnessAgent:
     def __init__(self, token: str, user_id: str):
@@ -153,7 +149,6 @@ class FitnessAgent:
 
         self._phys_prompt = self._format_physical_data(phys)
 
-    # — публичные методы —
 
     async def get_program(self, user_instruction: str = "") -> str:
         """
@@ -249,7 +244,6 @@ class FitnessAgent:
         save_user_data(self.user_id, self.user_data)
         return cleaned
 
-    # — утилиты —
 
     def _format_physical_data(self, d: dict) -> str:
         return (

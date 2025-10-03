@@ -16,27 +16,33 @@ from app.storage import load_user_data, save_user_data, set_last_reply, get_last
 
 logger = logging.getLogger("bot.telegram_bot")
 
-# Последний отправленный пользователю длинный ответ (чтобы сохранить в файл)
+# В памяти держим последний ответ, чтобы можно было сохранить в файл
 LAST_REPLIES: dict[str, str] = {}
-# Память состояний опроса
+# Простое состояние пользователя
 user_states: Dict[str, dict] = {}
 
-# ========================
-#         КЛАВИАТУРЫ
-# ========================
 
-# Цели: используем мужские эмодзи, но логика ниже не зависит от эмодзи/регистра
 GOAL_KEYBOARD = ReplyKeyboardMarkup(
-    [["🏋️‍♂️ Набрать массу", "🏃‍♂️ Похудеть", "🧘 Поддерживать форму"]],
+    [
+        ["🏋️‍♂️ Набрать массу", "🏃‍♂️ Похудеть", "🧘 Поддерживать форму"],
+    ],
     resize_keyboard=True,
     one_time_keyboard=True,
 )
 
 GENDER_CHOICES = ["👩 Женский", "👨 Мужской"]
-GENDER_KEYBOARD = ReplyKeyboardMarkup([GENDER_CHOICES], resize_keyboard=True, one_time_keyboard=True)
+GENDER_KEYBOARD = ReplyKeyboardMarkup(
+    [GENDER_CHOICES],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
 
 LEVEL_CHOICES = ["🚀 Начинающий", "🔥 Опытный"]
-LEVEL_KEYBOARD = ReplyKeyboardMarkup([LEVEL_CHOICES], resize_keyboard=True, one_time_keyboard=True)
+LEVEL_KEYBOARD = ReplyKeyboardMarkup(
+    [LEVEL_CHOICES],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
@@ -48,30 +54,31 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     is_persistent=True,
 )
 
-# ========================
-#        ВСПОМОГАЛКИ
-# ========================
 
 def _sanitize_for_tg(text: str) -> str:
-    """Немного чистим и убираем заголовочные #, чтобы не ломать Markdown в Telegram."""
+    """Убираем лишние HTML/markdown артефакты и заголовочные #."""
     out = text or ""
-    # Уберём префиксы заголовков (#, ##, ...) — Марина просила без них
+    # убрать #/## из начала строк
     out = re.sub(r"^\s*#{1,6}\s*", "", out, flags=re.MULTILINE)
-    # HTML-разрывы строк в \n
+    # <br>, <p>
     out = re.sub(r"\s*<br\s*/?>\s*", "\n", out, flags=re.IGNORECASE)
     out = re.sub(r"</?p\s*/?>", "\n", out, flags=re.IGNORECASE)
-    # Уберём тройные переносы
+    # убрать лишние пустые строки (>2 подряд -> 2)
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
 
 def _split_for_telegram(text: str, max_len: int = 3500) -> List[str]:
-    """Делим длинный текст на части: сначала по Дням, затем по пустым строкам, иначе по длине."""
+    """Делим длинный текст на части, стараясь резать по границам дней/абзацев."""
     if len(text) <= max_len:
         return [text]
+
     parts: List[str] = []
     remaining = text
     while len(remaining) > max_len:
-        cut = remaining.rfind("\n\nДень", 0, max_len)
+        # пробуем найти границу дня
+        cut = remaining.rfind("\n\nДень ", 0, max_len)
+        if cut < 0:
+            cut = remaining.rfind("\n\n**День", 0, max_len)
         if cut < 0:
             cut = remaining.rfind("\n\n", 0, max_len)
         if cut < 0:
@@ -83,19 +90,20 @@ def _split_for_telegram(text: str, max_len: int = 3500) -> List[str]:
     return parts
 
 async def _safe_send(chat: Chat, text: str, use_markdown: bool = True):
-    """
-    Безопасно шлём текст: если слишком длинный — бьём на части,
-    если Markdown ломается — отправляем plain.
-    """
+    """Безопасная отправка: разбивка на куски + fallback без Markdown при ошибке."""
     text = text.strip()
-    for chunk in _split_for_telegram(text, max_len=3500):
+    for chunk in _split_for_telegram(text):
         try:
             if use_markdown:
-                await chat.send_message(chunk, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+                await chat.send_message(
+                    chunk,
+                    parse_mode=ParseMode.MARKDOWN,
+                    disable_web_page_preview=True,
+                )
             else:
                 await chat.send_message(chunk, disable_web_page_preview=True)
         except Exception as e:
-            logger.error("Markdown send failed (%s). Fallback to plain text.", e)
+            logger.error("Markdown failed, fallback to plain. Err: %s", e)
             await chat.send_message(chunk, disable_web_page_preview=True)
 
 async def _send_main_menu(update: Update):
@@ -105,10 +113,7 @@ async def _send_main_menu(update: Update):
     )
 
 async def _save_last_to_file(update: Update, user_id: str):
-    """
-    Сохраняем ПОСЛЕДНЮЮ программу/ответ, показанный пользователю, в файл .txt.
-    Кнопка работает только для сохранения.
-    """
+    """Сохранение последней программы/ответа в файл .txt и отправка документом."""
     text = LAST_REPLIES.get(user_id) or get_last_reply(user_id) or ""
     if not text.strip():
         await update.effective_chat.send_message(
@@ -138,24 +143,16 @@ def _normalize_gender(text: str) -> Optional[str]:
     return None
 
 def _parse_goal(text: str) -> Optional[str]:
-    """
-    Разбираем цель из кнопки/сообщения, НЕ завися от эмодзи/регистра.
-    Возвращаем одно из: 'похудение' | 'набор массы' | 'поддержание формы'
-    """
+    """Пытаемся распознать цель из кнопки/текста."""
     t = (text or "").lower()
-    # Удалим всё не буквенно-цифровое, чтобы не мешали эмодзи
-    t = re.sub(r"[^\w\sёЁа-яА-Я]", " ", t)
-    if "похуд" in t:
+    if any(w in t for w in ("похуд", "сброс", "жир")):
         return "похудение"
-    if "набр" in t or "мас" in t:
+    if any(w in t for w in ("набра", "мас", "мышц")):
         return "набор массы"
-    if "поддерж" in t or "форм" in t:
+    if any(w in t for w in ("поддерж", "форма", "тони", "укреп")):
         return "поддержание формы"
     return None
 
-# ========================
-#      ОСНОВНОЙ HANDLER
-# ========================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -171,7 +168,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     completed = bool(data.get("physical_data_completed"))
     state = user_states.get(user_id) or {"mode": None, "step": 0, "data": {}}
 
-    # ---------- ЖЁСТКАЯ обработка кнопок (не попадают в Q&A) ----------
+
     if text == "💾 Сохранить в файл":
         await _save_last_to_file(update, user_id)
         return
@@ -180,48 +177,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Думаю над ответом на твой запрос…")
         try:
             agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
-            plan = await agent.get_program("")  # генерируем только программу по анкете
-            plan = _sanitize_for_tg(plan)
-            LAST_REPLIES[user_id] = plan
-            set_last_reply(user_id, plan)
-            await _safe_send(update.effective_chat, plan, use_markdown=True)
-            await _send_main_menu(update)
+            plan = await agent.get_program("")  # только новый план по анкете
         except Exception:
             logger.exception("Ошибка генерации альтернативной программы")
             await update.message.reply_text("Не получилось сгенерировать программу. Попробуй ещё раз.")
+            return
+        plan = _sanitize_for_tg(plan)
+        LAST_REPLIES[user_id] = plan
+        set_last_reply(user_id, plan)
+        await _safe_send(update.effective_chat, plan, use_markdown=True)
+        await _send_main_menu(update)
         return
 
     if text == "🔁 Начать заново":
-        # Полный сброс анкеты (имя оставляем, если было) — старт с выбора цели
+        # Полный сброс анкеты, старт с цели. Имя сохраняем, если было.
         data["physical_data"] = {"name": name}
         data["physical_data_completed"] = False
         save_user_data(user_id, data)
-        user_states[user_id] = {"mode": None, "step": 0, "data": {}}
+        user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
         await update.message.reply_text(
             "Начинаем заново! Выбери свою цель тренировок ⬇️",
             reply_markup=GOAL_KEYBOARD,
         )
         return
 
-    # ---------- Если анкета не завершена и нет активного режима — начинаем/продолжаем опрос ----------
     if not completed and state.get("mode") is None:
         if not name:
             user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
             await update.message.reply_text("Как тебя зовут?")
             return
+
+        user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
         await update.message.reply_text(
             f"{name}, выбери свою цель тренировок ⬇️",
             reply_markup=GOAL_KEYBOARD,
         )
         return
 
-    # ---------- Вход в Q&A ----------
     if text == "❓ Задать вопрос AI-тренеру":
         user_states[user_id] = {"mode": "qa", "step": 0, "data": {}}
         await update.message.reply_text("Задай вопрос по тренировкам/питанию 👇")
         return
 
-    # ---------- Режим Q&A ----------
     if state.get("mode") == "qa":
         agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
         answer = await agent.get_answer(text)
@@ -231,7 +228,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _safe_send(update.effective_chat, answer, use_markdown=True)
         return
 
-    # ---------- Анкета ----------
+    # Имя
     if state.get("mode") == "awaiting_name":
         if not text:
             await update.message.reply_text("Напиши, пожалуйста, имя.")
@@ -239,16 +236,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phys["name"] = _normalize_name(text)
         data["physical_data"] = phys
         save_user_data(user_id, data)
-        user_states[user_id] = {"mode": None, "step": 0, "data": {}}
+        user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
         await update.message.reply_text(
             f"{phys['name']}, выбери свою цель тренировок ⬇️",
             reply_markup=GOAL_KEYBOARD,
         )
         return
 
-    # Цель (разбор текста без зависимости от эмодзи/регистра)
-    goal = _parse_goal(text)
-    if goal:
+    # Цель
+    if state.get("mode") == "awaiting_goal":
+        goal = _parse_goal(text)
+        if not goal:
+            await update.message.reply_text(
+                "Пожалуйста, выбери цель кнопкой ниже:",
+                reply_markup=GOAL_KEYBOARD,
+            )
+            return
         user_states[user_id] = {"mode": "awaiting_gender", "step": 0, "data": {"target": goal}}
         await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
         return
@@ -257,14 +260,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state.get("mode") == "awaiting_gender":
         g = _normalize_gender(text)
         if not g:
-            await update.message.reply_text("Пожалуйста, выбери пол кнопкой ниже:", reply_markup=GENDER_KEYBOARD)
+            await update.message.reply_text(
+                "Пожалуйста, выбери пол кнопкой ниже:",
+                reply_markup=GENDER_KEYBOARD,
+            )
             return
-        st = {"mode": "survey", "step": 2, "data": {**state.get("data", {}), "gender": g}}
+        st = {"mode": "survey", "step": 2, "data": {**state["data"], "gender": g}}
         user_states[user_id] = st
         await update.message.reply_text("Сколько тебе лет?")
         return
 
-    # Последовательность вопросов анкеты
+    # Последовательность вопросов
     questions = [
         ("age", "Сколько тебе лет?"),
         ("height", "Твой рост в сантиметрах?"),
@@ -274,29 +280,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("schedule", "Сколько раз в неделю можешь посещать тренажёрный зал?"),
     ]
 
+    # Основной опрос (возраст → ... → частота)
     if state.get("mode") == "survey":
-        # Сохраняем предыдущий ответ
         if state["step"] > 1:
             prev_key = questions[state["step"] - 2][0]
             state["data"][prev_key] = text
-        # Задаём следующий вопрос
         if state["step"] <= len(questions):
             idx = state["step"] - 1
-            _, q_text = questions[idx]
+            _, qtext = questions[idx]
             user_states[user_id] = {"mode": "survey", "step": state["step"] + 1, "data": state["data"]}
-            await update.message.reply_text(q_text)
+            await update.message.reply_text(qtext)
             return
-        # Переходим к выбору уровня
+        # уровень подготовки
         user_states[user_id] = {"mode": "awaiting_level", "step": 0, "data": state["data"]}
         await update.message.reply_text("Выбери свой уровень подготовки:", reply_markup=LEVEL_KEYBOARD)
         return
 
+    # Уровень
     if state.get("mode") == "awaiting_level":
         if text not in LEVEL_CHOICES:
-            await update.message.reply_text("Пожалуйста, выбери уровень кнопкой ниже:", reply_markup=LEVEL_KEYBOARD)
+            await update.message.reply_text(
+                "Пожалуйста, выбери уровень кнопкой ниже:",
+                reply_markup=LEVEL_KEYBOARD,
+            )
             return
-        level = "опытный" if "Опыт" in text or "🔥" in text else "новичок"
-        finished = {**state.get("data", {}), "level": level}
+        level = "опытный" if ("Опыт" in text or "🔥" in text) else "новичок"
+        finished = {**state["data"], "level": level}
         user_states.pop(user_id, None)
 
         base = data.get("physical_data") or {}
@@ -322,13 +331,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _send_main_menu(update)
         return
 
-    # Если по какой-то причине анкета ещё не начата — стартуем с имени
     if not completed:
         user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
         await update.message.reply_text("Как тебя зовут?")
         return
 
-    # ---------- Остальное трактуем как пожелания к программе ----------
     agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
     try:
         plan = await agent.get_program(text)
