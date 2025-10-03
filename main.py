@@ -25,8 +25,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Сбрасываем анкету (кроме имени, если было) и передаём управление
-    в общий обработчик — он покажет клавиатуры и начнёт опрос.
+    Сбрасываем анкету (кроме имени, если было) и сразу даём выбрать цель.
+    Если имени нет — спрашиваем имя.
     """
     if not update.message:
         return
@@ -35,6 +35,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = load_user_data(user_id)
     name = (d.get("physical_data") or {}).get("name")
 
+    # мягкий сброс состояния пользователя
     d["physical_data"] = {"name": name}
     d["physical_data_completed"] = False
     d["history"] = []
@@ -42,6 +43,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d["last_reply"] = None
     save_user_data(user_id, d)
 
+    # чистим runtime-состояние
     user_states.pop(user_id, None)
 
     if not name:
@@ -53,15 +55,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Имя уже есть — сразу просим цель
-        user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
-        await update.message.reply_text(
-            f"{name}, выбери свою цель тренировок ⬇️",
-            reply_markup=GOAL_KEYBOARD,
-        )
+    # Имя уже есть — сразу просим цель (ВАЖНО: без лишнего отступа)
+    user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
+    await update.message.reply_text(
+        f"{name}, выбери свою цель тренировок ⬇️",
+        reply_markup=GOAL_KEYBOARD,
+    )
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # просто прокидываем в общий handler — он покажет актуальные кнопки
+    # прокидываем в общий handler — он покажет актуальные кнопки/состояния
     await handle_message(update, context)
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
