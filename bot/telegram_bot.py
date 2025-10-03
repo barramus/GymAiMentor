@@ -53,7 +53,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["❓ Задать вопрос AI-тренеру"],
         ["📄 Другая программа"],
-        ["💾 Сохранить в файл", "🔁 Начать заново"],
+        ["💾 Сохранить ответ", "🔁 Начать заново"],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -113,7 +113,7 @@ async def _safe_send(chat: Chat, text: str, use_markdown: bool = True):
 
 async def _send_main_menu(update: Update):
     await update.effective_chat.send_message(
-        "Что дальше? Выбери действие в меню ниже 👇",
+        "Что дальше? Выбери действие в меню ниже ⬇️",
         reply_markup=MAIN_KEYBOARD,
     )
 
@@ -174,7 +174,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user_states.get(user_id) or {"mode": None, "step": 0, "data": {}}
 
 
-    if text == "💾 Сохранить в файл":
+    if text == "💾 Сохранить ответ":
         await _save_last_to_file(update, user_id)
         return
 
@@ -195,15 +195,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "🔁 Начать заново":
-        # Полный сброс анкеты, старт с цели. Имя сохраняем, если было.
-        data["physical_data"] = {"name": name}
+        # Полный сброс: имя, анкета, история, последняя программа/ответ
+        data["physical_data"] = {}                 # <- имя тоже очищаем
         data["physical_data_completed"] = False
+        data["history"] = []
+        data["last_program"] = None
+        data["last_reply"] = None
         save_user_data(user_id, data)
-        user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
-        await update.message.reply_text(
-            "Начинаем заново! Выбери свою цель тренировок ⬇️",
-            reply_markup=GOAL_KEYBOARD,
-        )
+
+        # Сбрасываем runtime-состояние и начинаем заново с вопроса про имя
+        user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
+        await update.message.reply_text("Заполним анкету заново 💪🏼 Как тебя зовут?")
         return
 
     if not completed and state.get("mode") is None:
@@ -220,7 +222,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "❓ Задать вопрос AI-тренеру":
         user_states[user_id] = {"mode": "qa", "step": 0, "data": {}}
-        await update.message.reply_text("Задай вопрос по тренировкам/питанию 👇")
+        await update.message.reply_text("Задай вопрос по тренировкам/питанию ✍🏼")
         return
 
     if state.get("mode") == "qa":
@@ -307,7 +309,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=LEVEL_KEYBOARD,
             )
             return
-        level = "опытный" if ("Опыт" in text or "🔥" in text) else "новичок"
+        level = "опытный" if ("Опыт" in text or "🔥" in text) else "начинающий"
         finished = {**state["data"], "level": level}
         user_states.pop(user_id, None)
 
