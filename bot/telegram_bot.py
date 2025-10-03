@@ -113,7 +113,7 @@ async def _safe_send(chat: Chat, text: str, use_markdown: bool = True):
 
 async def _send_main_menu(update: Update):
     await update.effective_chat.send_message(
-        "Что дальше? Выбери действие в меню ниже ⬇️",
+        "Что дальше? Выбери действие в меню ⬇️",
         reply_markup=MAIN_KEYBOARD,
     )
 
@@ -132,7 +132,7 @@ async def _save_last_to_file(update: Update, user_id: str):
     out_path.write_text(text, encoding="utf-8")
     with open(out_path, "rb") as fh:
         await update.effective_chat.send_document(
-            fh, filename=fname, caption="Файл с твоим последним запросом"
+            fh, filename=fname, caption="Вот файл с твоим последним запросом 👌🏼"
         )
 
 def _normalize_name(raw: str) -> str:
