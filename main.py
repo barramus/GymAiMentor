@@ -54,11 +54,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Имя уже есть — сразу просим цель
-    user_states[user_id] = {"mode": None, "step": 0, "data": {}}
-    await update.message.reply_text(
-        f"{name}, выбери свою цель тренировок ⬇️",
-        reply_markup=GOAL_KEYBOARD,
-    )
+        user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
+        await update.message.reply_text(
+            f"{name}, выбери свою цель тренировок ⬇️",
+            reply_markup=GOAL_KEYBOARD,
+        )
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # просто прокидываем в общий handler — он покажет актуальные кнопки

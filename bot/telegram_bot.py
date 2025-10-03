@@ -21,6 +21,11 @@ LAST_REPLIES: dict[str, str] = {}
 # Простое состояние пользователя
 user_states: Dict[str, dict] = {}
 
+GOAL_MAPPING = {
+    "🏃‍♂️ Похудеть": "похудение",
+    "🏋️‍♂️ Набрать массу": "набор массы",
+    "🧘 Поддерживать форму": "поддержание формы",
+}
 
 GOAL_KEYBOARD = ReplyKeyboardMarkup(
     [
@@ -206,7 +211,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
             await update.message.reply_text("Как тебя зовут?")
             return
-
         user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
         await update.message.reply_text(
             f"{name}, выбери свою цель тренировок ⬇️",
@@ -245,15 +249,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Цель
     if state.get("mode") == "awaiting_goal":
-        goal = _parse_goal(text)
-        if not goal:
-            await update.message.reply_text(
-                "Пожалуйста, выбери цель кнопкой ниже:",
-                reply_markup=GOAL_KEYBOARD,
-            )
+        if text in GOAL_MAPPING:
+            # цель выбрана — идём дальше к полу
+            user_states[user_id] = {"mode": "awaiting_gender", "step": 0, "data": {"target": GOAL_MAPPING[text]}}
+            await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
             return
-        user_states[user_id] = {"mode": "awaiting_gender", "step": 0, "data": {"target": goal}}
-        await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
+
+        # если прислали что-то кроме кнопки — повторим просьбу выбрать цель
+        await update.message.reply_text("Пожалуйста, выбери цель кнопкой ниже:", reply_markup=GOAL_KEYBOARD)
         return
 
     # Пол
