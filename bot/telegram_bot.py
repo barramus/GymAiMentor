@@ -66,8 +66,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 EDIT_PARAMS_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["⚖️ Текущий вес", "🎯 Желаемый вес"],
-        ["📅 Изменить частоту", "🏋️ Изменить уровень"],
-        ["⚠️ Изменить ограничения"],
+        ["📈 Частота тренировок", "🏋️ Уровень подготовки"],
+        ["⚠️ Ограничения / предпочтения"],
         ["◀️ Назад в меню"],
     ],
     resize_keyboard=True,
@@ -342,7 +342,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if text == "📅 Изменить частоту":
+    if text == "📈 Частота тренировок":
         user_states[user_id] = {"mode": "editing_schedule", "step": 0, "data": {}}
         current_schedule = phys.get("schedule", "не указана")
         await update.message.reply_text(
@@ -350,7 +350,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if text == "⚠️ Изменить ограничения":
+    if text == "⚠️ Ограничения / предпочтения":
         user_states[user_id] = {"mode": "editing_restrictions", "step": 0, "data": {}}
         current_restrictions = phys.get("restrictions", "нет")
         await update.message.reply_text(
@@ -358,7 +358,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if text == "🏋️ Изменить уровень":
+    if text == "🏋️ Уровень подготовки":
         user_states[user_id] = {"mode": "editing_level", "step": 0, "data": {}}
         current_level = phys.get("level", "не указан")
         await update.message.reply_text(
@@ -435,7 +435,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update_user_param(user_id, "restrictions", restrictions)
         user_states.pop(user_id, None)
         await update.message.reply_text(
-            f"✅ Ограничения успешно обновлены: {restrictions or 'нет'}",
+            f"✅ Ограничения / предпочтения успешно обновлены: {restrictions or 'нет'}",
             reply_markup=MAIN_KEYBOARD,
         )
         return
