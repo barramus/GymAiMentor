@@ -24,6 +24,10 @@ LAST_REPLIES: dict[str, str] = {}
 
 user_states: Dict[str, dict] = {}
 
+# Rate limiting: user_id -> последнее время генерации
+last_generation_time: Dict[str, float] = {}
+GENERATION_COOLDOWN = 30  # секунд между генерациями
+
 GOAL_MAPPING = {
     "🏃‍♂️ Похудеть": "похудение",
     "🏋️‍♂️ Набрать массу": "набор массы",
@@ -57,14 +61,27 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["❓ Задать вопрос AI-тренеру"],
         ["📄 Другая программа", "🎯 Изменить цель"],
         ["📋 Моя анкета", "⚙️ Изменить параметры"],
-        ["💾 Сохранить ответ", "🔁 Начать заново"],
+        ["💾 Сохранить ответ", "📚 История запросов"],
+        ["🔁 Начать заново"],
     ],
     resize_keyboard=True,
     is_persistent=True,
 )
 
+VARIATIONS_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["💪 Больше базовых", "🎯 Больше изоляции"],
+        ["🏋️ Акцент на силу", "⚡ Акцент на выносливость"],
+        ["🎲 Случайная вариация"],
+        ["◀️ Назад в меню"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
+
 EDIT_PARAMS_KEYBOARD = ReplyKeyboardMarkup(
     [
+        ["👤 Имя", "🔢 Возраст"],
         ["⚖️ Текущий вес", "🎯 Желаемый вес"],
         ["📈 Частота тренировок", "🏋️ Уровень подготовки"],
         ["⚠️ Ограничения / предпочтения"],
@@ -150,6 +167,44 @@ async def _save_last_to_file(update: Update, user_id: str):
             fh, filename=fname, caption="Вот файл с твоим последним запросом 👌🏼"
         )
 
+async def _show_saved_programs(update: Update, user_id: str):
+    """Показывает список последних сохраненных программ пользователя."""
+    user_dir = Path("data/users")
+    pattern = f"program_{user_id}_*.txt"
+    
+    # Находим все файлы пользователя
+    files = list(user_dir.glob(pattern))
+    
+    if not files:
+        await update.effective_chat.send_message(
+            "У тебя пока нет сохранённых программ.\n\nИспользуй кнопку «💾 Сохранить ответ» после генерации программы."
+        )
+        return
+    
+    # Сортируем по дате (последние сверху)
+    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    
+    # Берем последние 10
+    recent_files = files[:10]
+    
+    await update.effective_chat.send_message(
+        f"📚 Найдено сохранённых программ: {len(files)}\n\nОтправляю последние {len(recent_files)}..."
+    )
+    
+    for file_path in recent_files:
+        # Извлекаем timestamp из имени файла
+        try:
+            timestamp = int(file_path.stem.split('_')[-1])
+            date_str = time.strftime("%d.%m.%Y %H:%M", time.localtime(timestamp))
+            caption = f"📄 Программа от {date_str}"
+        except (ValueError, IndexError):
+            caption = f"📄 {file_path.name}"
+        
+        with open(file_path, "rb") as fh:
+            await update.effective_chat.send_document(
+                fh, filename=file_path.name, caption=caption
+            )
+
 def _normalize_name(raw: str) -> str:
     name = (raw or "").strip()
     return name[:80] if len(name) > 80 else name
@@ -190,7 +245,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     if text == "💾 Сохранить ответ":
+        logger.info(f"User {user_id} ({name}) saving last reply to file")
         await _save_last_to_file(update, user_id)
+        return
+
+    if text == "📚 История запросов":
+        logger.info(f"User {user_id} ({name}) viewing saved programs history")
+        await _show_saved_programs(update, user_id)
         return
 
     if text == "📋 Моя анкета":
@@ -200,6 +261,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=MAIN_KEYBOARD,
             )
             return
+        logger.info(f"User {user_id} ({name}) viewing profile")
         profile_text = get_user_profile_text(user_id)
         await update.message.reply_text(profile_text, parse_mode=ParseMode.MARKDOWN)
         return
@@ -211,6 +273,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=MAIN_KEYBOARD,
             )
             return
+        logger.info(f"User {user_id} ({name}) opening edit parameters menu")
         await update.message.reply_text(
             "Выбери параметр для изменения ⬇️",
             reply_markup=EDIT_PARAMS_KEYBOARD,
@@ -231,6 +294,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
             
+        logger.info(f"User {user_id} ({name}) changing goal from {phys.get('target')}")
+        
         # Переход в режим выбора новой цели
         user_states[user_id] = {"mode": "changing_goal", "step": 0, "data": {}}
         
@@ -243,22 +308,89 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "📄 Другая программа":
-        await update.message.reply_text("Думаю над ответом на твой запрос…")
+        # Показываем меню вариаций
+        await update.message.reply_text(
+            "Выбери стиль программы ⬇️",
+            reply_markup=VARIATIONS_KEYBOARD
+        )
+        return
+
+    # Обработка вариаций программ
+    variation_map = {
+        "💪 Больше базовых": "Сделай акцент на базовые многосуставные упражнения (приседания, становая, жимы, подтягивания).",
+        "🎯 Больше изоляции": "Добавь больше изолирующих упражнений для проработки отдельных мышечных групп.",
+        "🏋️ Акцент на силу": "Программа с акцентом на развитие силы: меньше повторений (4-6), больше отдыха, тяжелые веса.",
+        "⚡ Акцент на выносливость": "Программа с акцентом на выносливость: больше повторений (15-20), меньше отдыха, умеренные веса.",
+        "🎲 Случайная вариация": "Сделай максимально разнообразную и нестандартную программу, используй креативные упражнения.",
+    }
+    
+    if text in variation_map:
+        # Rate limiting check
+        current_time = time.time()
+        last_time = last_generation_time.get(user_id, 0)
+        time_since_last = current_time - last_time
+        
+        if time_since_last < GENERATION_COOLDOWN:
+            wait_time = int(GENERATION_COOLDOWN - time_since_last)
+            await update.message.reply_text(
+                f"⏳ Подожди ещё {wait_time} секунд перед следующей генерацией.\n\n"
+                "Это защита от перегрузки 😊"
+            )
+            return
+        
+        # Логируем запрос
+        logger.info(f"User {user_id} ({name}) requested program variation: {text}")
+        
+        progress_msg = await update.message.reply_text("⏳ Генерирую программу...")
+        start_time = time.time()
+        
         try:
             agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
-            plan = await agent.get_program("")  # только новый план по анкете
-        except Exception:
-            logger.exception("Ошибка генерации альтернативной программы")
-            await update.message.reply_text("Не получилось сгенерировать программу. Попробуй ещё раз.")
+            variation = variation_map[text]
+            
+            # Генерация с вариацией
+            plan = await agent.get_program(variation)
+            
+            generation_time = time.time() - start_time
+            logger.info(f"Program generated for user {user_id} in {generation_time:.2f}s")
+            
+            await progress_msg.edit_text("✨ Программа готова!")
+            
+            # Обновляем время последней генерации
+            last_generation_time[user_id] = current_time
+            
+        except Exception as e:
+            logger.exception(f"Error generating program for user {user_id}")
+            
+            # Различные типы ошибок
+            error_msg = "❌ Не получилось сгенерировать программу.\n\n"
+            
+            if "timeout" in str(e).lower():
+                error_msg += "⏱️ Сервер не ответил вовремя. Попробуй ещё раз через минуту."
+            elif "connection" in str(e).lower():
+                error_msg += "🌐 Проблемы с подключением к серверу. Попробуй позже."
+            elif "unauthorized" in str(e).lower() or "403" in str(e):
+                error_msg += "🔒 Проблема с авторизацией. Свяжись с администратором."
+            else:
+                error_msg += f"Попробуй ещё раз позже.\n\nТехническая информация: {str(e)[:100]}"
+            
+            await progress_msg.edit_text(error_msg)
             return
+        
         plan = _sanitize_for_tg(plan)
         LAST_REPLIES[user_id] = plan
         set_last_reply(user_id, plan)
+        
+        # Логируем успешную отправку
+        logger.info(f"Program sent to user {user_id}, length: {len(plan)} chars")
+        
         await _safe_send(update.effective_chat, plan, use_markdown=True)
         await _send_main_menu(update)
         return
 
     if text == "🔁 Начать заново":
+        logger.info(f"User {user_id} ({name}) restarting registration")
+        
         # Полный сброс: имя, анкета, история, последняя программа/ответ
         data["physical_data"] = {}                 # <- имя тоже очищаем
         data["physical_data_completed"] = False
@@ -287,14 +419,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "❓ Задать вопрос AI-тренеру":
         user_states[user_id] = {"mode": "qa", "step": 0, "data": {}}
         await update.message.reply_text("Задай вопрос по тренировкам/питанию ✍🏼")
+        logger.info(f"User {user_id} ({name}) entered Q&A mode")
         return
 
     if state.get("mode") == "qa":
-        agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
-        answer = await agent.get_answer(text)
+        logger.info(f"User {user_id} ({name}) asked: {text[:100]}")
+        
+        progress_msg = await update.message.reply_text("⏳ Думаю над ответом...")
+        start_time = time.time()
+        
+        try:
+            agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
+            answer = await agent.get_answer(text)
+            
+            answer_time = time.time() - start_time
+            logger.info(f"Answer generated for user {user_id} in {answer_time:.2f}s")
+            
+            await progress_msg.delete()
+        except Exception as e:
+            logger.exception(f"Error generating answer for user {user_id}")
+            
+            error_msg = "❌ Не удалось получить ответ.\n\n"
+            
+            if "timeout" in str(e).lower():
+                error_msg += "⏱️ Сервер не ответил вовремя. Попробуй переформулировать вопрос."
+            elif "connection" in str(e).lower():
+                error_msg += "🌐 Проблемы с подключением. Попробуй позже."
+            else:
+                error_msg += "Попробуй задать вопрос ещё раз."
+            
+            await progress_msg.edit_text(error_msg)
+            return
+        
         answer = _sanitize_for_tg(answer)
         LAST_REPLIES[user_id] = answer
         set_last_reply(user_id, answer)
+        
+        logger.info(f"Answer sent to user {user_id}, length: {len(answer)} chars")
+        
         await _safe_send(update.effective_chat, answer, use_markdown=True)
         return
 
@@ -326,6 +488,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Обработчики редактирования параметров
+    if text == "👤 Имя":
+        user_states[user_id] = {"mode": "editing_name", "step": 0, "data": {}}
+        current_name = phys.get("name", "не указано")
+        await update.message.reply_text(
+            f"Текущее имя: {current_name}\n\nВведи новое имя:"
+        )
+        return
+
+    if text == "🔢 Возраст":
+        user_states[user_id] = {"mode": "editing_age", "step": 0, "data": {}}
+        current_age = phys.get("age", "не указан")
+        await update.message.reply_text(
+            f"Текущий возраст: {current_age} лет\n\nВведи новый возраст (10-100 лет):"
+        )
+        return
+
     if text == "⚖️ Текущий вес":
         user_states[user_id] = {"mode": "editing_weight", "step": 0, "data": {}}
         current_weight = phys.get("weight", "не указан")
@@ -385,6 +563,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Если прислали что-то кроме кнопки
         await update.message.reply_text("Пожалуйста, выбери цель кнопкой ниже:", reply_markup=GOAL_KEYBOARD)
+        return
+
+    # Обработка ввода нового имени
+    if state.get("mode") == "editing_name":
+        new_name = _normalize_name(text)
+        if not new_name:
+            await update.message.reply_text("❌ Имя не может быть пустым.\n\nПопробуй ещё раз:")
+            return
+        update_user_param(user_id, "name", new_name)
+        user_states.pop(user_id, None)
+        await update.message.reply_text(
+            f"✅ Имя успешно обновлено: {new_name}",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    # Обработка ввода нового возраста
+    if state.get("mode") == "editing_age":
+        valid, value, error = validate_age(text)
+        if not valid:
+            await update.message.reply_text(f"❌ {error}\n\nПопробуй ещё раз:")
+            return
+        update_user_param(user_id, "age", value)
+        user_states.pop(user_id, None)
+        await update.message.reply_text(
+            f"✅ Возраст успешно обновлён: {value} лет",
+            reply_markup=MAIN_KEYBOARD,
+        )
         return
 
     # Обработка ввода нового текущего веса
@@ -554,19 +760,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["physical_data_completed"] = True
         save_user_data(user_id, data)
 
-        await update.message.reply_text("Спасибо! Формирую твою персональную программу…")
+        logger.info(f"User {user_id} ({base.get('name')}) completed registration")
+
+        progress_msg = await update.message.reply_text("⏳ Спасибо! Формирую твою персональную программу…")
+        start_time = time.time()
 
         agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
         try:
             plan = await agent.get_program("")
-        except Exception:
-            logger.exception("Ошибка генерации программы")
-            await update.message.reply_text("Не удалось сгенерировать программу. Попробуй ещё раз.")
+            
+            generation_time = time.time() - start_time
+            logger.info(f"First program generated for user {user_id} in {generation_time:.2f}s")
+            
+            await progress_msg.edit_text("✨ Программа готова!")
+        except Exception as e:
+            logger.exception(f"Error generating first program for user {user_id}")
+            
+            error_msg = "❌ Не удалось сгенерировать программу.\n\n"
+            
+            if "timeout" in str(e).lower():
+                error_msg += "⏱️ Сервер не ответил вовремя. Используй кнопку «📄 Другая программа» чтобы попробовать снова."
+            elif "connection" in str(e).lower():
+                error_msg += "🌐 Проблемы с подключением. Попробуй через минуту кнопкой «📄 Другая программа»."
+            else:
+                error_msg += "Попробуй через кнопку «📄 Другая программа» в главном меню."
+            
+            await progress_msg.edit_text(error_msg)
+            await _send_main_menu(update)
             return
 
         plan = _sanitize_for_tg(plan)
         LAST_REPLIES[user_id] = plan
         set_last_reply(user_id, plan)
+        
+        logger.info(f"First program sent to user {user_id}, length: {len(plan)} chars")
+        
         await _safe_send(update.effective_chat, plan, use_markdown=True)
         await _send_main_menu(update)
         return
