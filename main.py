@@ -14,7 +14,7 @@ from app.storage import load_user_data, save_user_data
 from bot.telegram_bot import user_states, GOAL_KEYBOARD, handle_message
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("main")
@@ -56,7 +56,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Имя уже есть — сразу просим цель (ВАЖНО: без лишнего отступа)
-    user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
+    user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {"name": name}}
     await update.message.reply_text(
         f"{name}, выбери свою цель тренировок ⬇️",
         reply_markup=GOAL_KEYBOARD,

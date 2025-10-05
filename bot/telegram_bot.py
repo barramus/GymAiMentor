@@ -783,10 +783,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Основной опрос (возраст → ... → частота)
     if state.get("mode") == "survey":
-        logger.debug(f"Survey mode - step={state['step']}, current data: {state['data']}, user text: {text[:50]}")
+        logger.debug(f"Survey mode - step={state['step']}, current data: {state.get('data', {})}, user text: {text[:50] if text else 'empty'}")
+        
         # Валидация предыдущего ответа (если это не первый вход в опрос)
         if state["step"] > 1:
             prev_key = questions[state["step"] - 2][0]
+            logger.debug(f"Validating prev_key={prev_key}, text={text}")
             
             # Применяем валидацию в зависимости от поля
             if prev_key == "age":
@@ -825,12 +827,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 state["data"][prev_key] = value
             else:
                 state["data"][prev_key] = text
+            
+            logger.debug(f"After validation - state[data]: {state['data']}")
         
         # Проверяем: есть ли еще вопросы?
         if state["step"] <= len(questions):
             idx = state["step"] - 1
             _, qtext = questions[idx]
+            # ВАЖНО: сохраняем обновленный state обратно в user_states
             user_states[user_id] = {"mode": "survey", "step": state["step"] + 1, "data": state["data"]}
+            logger.debug(f"Moving to next question, saved state: {user_states[user_id]}")
             await update.message.reply_text(qtext)
             return
         
