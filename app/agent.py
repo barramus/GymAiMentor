@@ -309,4 +309,4 @@ class FitnessAgent:
 
     def _with_name_prefix(self, text: str) -> str:
         name = (self._user_name or "").strip()
-        return (f"{name}, вот твой план ⬇️\n\n" if name else "") + text
+        return (f"{name}, лови программу тренировок 💪🏼 Если тебе понравился этот план, не забудь сохранить ответ кнопкой ниже ⬇️\n\n" if name else "") + text

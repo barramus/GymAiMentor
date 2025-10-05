@@ -348,7 +348,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "data": {"muscle_group": muscle_groups_map[text]}
         }
         await update.message.reply_text(
-            f"Отлично! Программа с акцентом на {muscle_groups_map[text]}.\n\nТеперь выбери стиль тренировок ⬇️",
+            f"Супер! Программа с акцентом на {muscle_groups_map[text]}.\n\nТеперь выбери стиль тренировок ⬇️",
             reply_markup=VARIATIONS_KEYBOARD
         )
         return
