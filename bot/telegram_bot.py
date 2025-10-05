@@ -95,6 +95,7 @@ EDIT_PARAMS_KEYBOARD = ReplyKeyboardMarkup(
         ["👤 Имя", "🔢 Возраст"],
         ["⚖️ Текущий вес", "🎯 Желаемый вес"],
         ["📈 Частота тренировок", "🏋️ Уровень подготовки"],
+        ["💪 Акцент на мышцы"],
         ["⚠️ Ограничения / предпочтения"],
         ["◀️ Назад в меню"],
     ],
@@ -588,6 +589,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if text == "💪 Акцент на мышцы":
+        user_states[user_id] = {"mode": "editing_muscle_group", "step": 0, "data": {}}
+        muscle_group_display = {
+            "ноги": "🦵 Ноги",
+            "ягодицы": "🍑 Ягодицы",
+            "спина": "🔙 Спина",
+            "плечи и руки": "💪 Плечи и руки",
+            "сбалансированно": "🎲 Сбалансированно"
+        }
+        current_group = phys.get("preferred_muscle_group", "не указан")
+        display_group = muscle_group_display.get(current_group, current_group)
+        await update.message.reply_text(
+            f"Текущий акцент: {display_group}\n\nВыбери новый акцент на группу мышц:",
+            reply_markup=MUSCLE_GROUPS_KEYBOARD,
+        )
+        return
+
     # Изменение цели (после заполнения анкеты)
     if state.get("mode") == "changing_goal":
         if text in GOAL_MAPPING:
@@ -706,6 +724,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Обработка изменения акцента на мышечную группу
+    if state.get("mode") == "editing_muscle_group":
+        muscle_groups_map = {
+            "🦵 Упор на ноги": "ноги",
+            "🍑 Упор на ягодицы": "ягодицы",
+            "🔙 Упор на спину": "спина",
+            "💪 Упор на плечи и руки": "плечи и руки",
+            "🎲 Сбалансированная программа": "сбалансированно",
+        }
+        
+        if text not in muscle_groups_map:
+            await update.message.reply_text(
+                "Пожалуйста, выбери группу мышц кнопкой ниже:",
+                reply_markup=MUSCLE_GROUPS_KEYBOARD,
+            )
+            return
+        
+        muscle_group = muscle_groups_map[text]
+        update_user_param(user_id, "preferred_muscle_group", muscle_group)
+        user_states.pop(user_id, None)
+        await update.message.reply_text(
+            f"✅ Акцент на мышцы успешно обновлён: {text}",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
     # Пол
     if state.get("mode") == "awaiting_gender":
         g = _normalize_gender(text)
@@ -794,7 +838,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         level = "опытный" if ("Опыт" in text or "🔥" in text) else "начинающий"
-        finished = {**state["data"], "level": level}
+        
+        # Сохраняем уровень и переходим к выбору мышечной группы
+        user_states[user_id] = {
+            "mode": "awaiting_muscle_group", 
+            "step": 0, 
+            "data": {**state["data"], "level": level}
+        }
+        
+        await update.message.reply_text(
+            "Отлично! Теперь выбери, на какую группу мышц хочешь сделать акцент в тренировках ⬇️",
+            reply_markup=MUSCLE_GROUPS_KEYBOARD
+        )
+        return
+    
+    # Выбор мышечной группы (после уровня, перед генерацией первой программы)
+    if state.get("mode") == "awaiting_muscle_group":
+        muscle_groups_map = {
+            "🦵 Упор на ноги": "ноги",
+            "🍑 Упор на ягодицы": "ягодицы",
+            "🔙 Упор на спину": "спина",
+            "💪 Упор на плечи и руки": "плечи и руки",
+            "🎲 Сбалансированная программа": "сбалансированно",
+        }
+        
+        if text not in muscle_groups_map:
+            await update.message.reply_text(
+                "Пожалуйста, выбери группу мышц кнопкой ниже:",
+                reply_markup=MUSCLE_GROUPS_KEYBOARD,
+            )
+            return
+        
+        # Сохраняем выбранную группу мышц
+        muscle_group = muscle_groups_map[text]
+        finished = {**state["data"], "preferred_muscle_group": muscle_group}
         user_states.pop(user_id, None)
 
         base = data.get("physical_data") or {}
@@ -803,7 +880,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["physical_data_completed"] = True
         save_user_data(user_id, data)
 
-        logger.info(f"User {user_id} ({base.get('name')}) completed registration")
+        logger.info(f"User {user_id} ({base.get('name')}) completed registration with muscle group: {muscle_group}")
 
         progress_msg = await update.message.reply_text("⏳ Спасибо! Формирую твою персональную программу…")
         start_time = time.time()
@@ -822,11 +899,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             error_msg = "❌ Не удалось сгенерировать программу.\n\n"
             
             if "timeout" in str(e).lower():
-                error_msg += "⏱️ Сервер не ответил вовремя. Используй кнопку «📄 Другая программа» чтобы попробовать снова."
+                error_msg += "⏱️ Сервер не ответил вовремя. Используй кнопку «🆕 Другая программа» чтобы попробовать снова."
             elif "connection" in str(e).lower():
-                error_msg += "🌐 Проблемы с подключением. Попробуй через минуту кнопкой «📄 Другая программа»."
+                error_msg += "🌐 Проблемы с подключением. Попробуй через минуту кнопкой «🆕 Другая программа»."
             else:
-                error_msg += "Попробуй через кнопку «📄 Другая программа» в главном меню."
+                error_msg += "Попробуй через кнопку «🆕 Другая программа» в главном меню."
             
             await progress_msg.edit_text(error_msg)
             await _send_main_menu(update)

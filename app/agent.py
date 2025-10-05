@@ -9,9 +9,9 @@ from gigachat.models import Chat, Messages, MessagesRole
 from app.storage import load_user_data, save_user_data
 
 GIGACHAT_MODEL: str = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Max").strip()
-GIGACHAT_TEMPERATURE: float = float(os.getenv("GIGACHAT_TEMPERATURE", "0.25"))
-GIGACHAT_MAX_TOKENS: int = int(os.getenv("GIGACHAT_MAX_TOKENS", "2200"))
-GIGACHAT_TIMEOUT: int = int(os.getenv("GIGACHAT_TIMEOUT", "60"))
+GIGACHAT_TEMPERATURE: float = float(os.getenv("GIGACHAT_TEMPERATURE", "0.35"))  # Увеличено для разнообразия
+GIGACHAT_MAX_TOKENS: int = int(os.getenv("GIGACHAT_MAX_TOKENS", "5000"))  # Увеличено для детальных программ
+GIGACHAT_TIMEOUT: int = int(os.getenv("GIGACHAT_TIMEOUT", "90"))  # Увеличено т.к. больше токенов
 GIGACHAT_RETRIES: int = int(os.getenv("GIGACHAT_RETRIES", "3"))
 
 
@@ -218,7 +218,7 @@ class FitnessAgent:
                 Messages(role=MessagesRole.USER, content=f"Анкета:\n{self._phys_prompt}\n\nВопрос:\n{question}"),
             ],
             temperature=min(0.35, GIGACHAT_TEMPERATURE),
-            max_tokens=min(1000, GIGACHAT_MAX_TOKENS),
+            max_tokens=min(2500, GIGACHAT_MAX_TOKENS),  # Увеличено для развёрнутых ответов
             model=GIGACHAT_MODEL,
         )
 
@@ -246,7 +246,8 @@ class FitnessAgent:
 
 
     def _format_physical_data(self, d: dict) -> str:
-        return (
+        # Базовая информация
+        result = (
             f"Цель: {d.get('target') or 'не указана'}\n"
             f"Пол: {d.get('gender') or 'не указано'}\n"
             f"Возраст: {d.get('age') or 'не указано'} лет\n"
@@ -257,6 +258,13 @@ class FitnessAgent:
             f"Частота тренировок: {d.get('schedule') or 'не указано'}\n"
             f"Уровень: {d.get('level') or 'не указано'}"
         )
+        
+        # Добавляем предпочитаемую группу мышц если указана
+        preferred_group = d.get('preferred_muscle_group')
+        if preferred_group and preferred_group != 'сбалансированно':
+            result += f"\n\n⚠️ ВАЖНО: Пользователь хочет сделать ОСОБЫЙ АКЦЕНТ на {preferred_group}. Включи больше упражнений для этой группы мышц в программу."
+        
+        return result
 
     def _with_name_prefix(self, text: str) -> str:
         name = (self._user_name or "").strip()

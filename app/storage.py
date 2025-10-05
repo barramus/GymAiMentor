@@ -64,6 +64,7 @@ DEFAULT_USER_DATA: Dict[str, Any] = {
         "level": None,         # "начинающий"/"опытный"
         "schedule": None,      # сколько раз/неделю
         "target": None,        # "похудение"/"набор массы"/"поддержание формы"
+        "preferred_muscle_group": None,  # предпочитаемая группа мышц для акцента
     },
     "lifts": {},               # на будущее (история упражнений)
     "last_reply": None,        # последний текст (любого ответа)
@@ -255,7 +256,8 @@ def update_user_param(user_id: str, param_name: str, value: Any, folder: str = "
             'schedule': '📈 частоту тренировок',
             'restrictions': '⚠️ ограничения',
             'level': '🏋️ уровень подготовки',
-            'height': '📏 рост'
+            'height': '📏 рост',
+            'preferred_muscle_group': '💪 акцент на мышцы'
         }
         label = param_labels.get(param_name, param_name)
         hist = d.get("history", [])
@@ -286,6 +288,18 @@ def get_user_profile_text(user_id: str, folder: str = "data/users") -> str:
     target = phys.get('target') or 'не указана'
     target_icon = goal_icons.get(target, "🎯")
     
+    # Форматируем акцент на мышечную группу
+    muscle_group_display = {
+        "ноги": "🦵 Ноги",
+        "ягодицы": "🍑 Ягодицы",
+        "спина": "🔙 Спина",
+        "плечи и руки": "💪 Плечи и руки",
+        "сбалансированно": "🎲 Сбалансированно"
+    }
+    
+    preferred = phys.get('preferred_muscle_group')
+    muscle_group_text = muscle_group_display.get(preferred, preferred or 'не указано')
+    
     text = f"""📋 **Твоя анкета:**
 
 👤 Имя: {phys.get('name') or 'не указано'}
@@ -297,6 +311,7 @@ def get_user_profile_text(user_id: str, folder: str = "data/users") -> str:
 🎯 Желаемый вес: {phys.get('goal') or 'не указано'} кг
 🏋️ Уровень: {phys.get('level') or 'не указано'}
 📈 Частота: {phys.get('schedule') or 'не указано'} раз/неделю
+💪 Акцент на мышцы: {muscle_group_text}
 ⚠️ Ограничения: {phys.get('restrictions') or 'нет'}"""
     
     return text
