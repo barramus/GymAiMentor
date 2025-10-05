@@ -59,9 +59,9 @@ LEVEL_KEYBOARD = ReplyKeyboardMarkup(
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["❓ Задать вопрос AI-тренеру"],
-        ["💪🏼 Другая программа", "🎯 Изменить цель"],
+        ["🆕 Другая программа", "🎯 Изменить цель"],
         ["📋 Моя анкета", "⚙️ Изменить параметры"],
-        ["💾 Сохранить ответ", "📑 История запросов"],
+        ["💾 Сохранить ответ", "📑 Сохранённые ответы"],
         ["🔁 Начать заново"],
     ],
     resize_keyboard=True,
@@ -196,9 +196,9 @@ async def _show_saved_programs(update: Update, user_id: str):
         try:
             timestamp = int(file_path.stem.split('_')[-1])
             date_str = time.strftime("%d.%m.%Y %H:%M", time.localtime(timestamp))
-            caption = f"💪🏼 Программа от {date_str}"
+            caption = f"📎 Запрос от {date_str}"
         except (ValueError, IndexError):
-            caption = f"💪🏼 {file_path.name}"
+            caption = f"📎 {file_path.name}"
         
         with open(file_path, "rb") as fh:
             await update.effective_chat.send_document(
@@ -249,7 +249,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _save_last_to_file(update, user_id)
         return
 
-    if text == "📑 История запросов":
+    if text == "📑 Сохранённые ответы":
         logger.info(f"User {user_id} ({name}) viewing saved programs history")
         await _show_saved_programs(update, user_id)
         return
@@ -307,7 +307,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if text == "💪🏼 Другая программа":
+    if text == "🆕 Другая программа":
         # Показываем меню вариаций
         await update.message.reply_text(
             "Выбери стиль программы ⬇️",
@@ -401,7 +401,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Сбрасываем runtime-состояние и начинаем заново с вопроса про имя
         user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
-        await update.message.reply_text("Заполним анкету заново 💪🏼 Как тебя зовут?")
+        await update.message.reply_text("Заполним анкету заново 📝 Как тебя зовут?")
         return
 
     if not completed and state.get("mode") is None:
