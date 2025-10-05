@@ -61,7 +61,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["❓ Задать вопрос AI-тренеру"],
         ["🆕 Другая программа", "🎯 Изменить цель"],
         ["📋 Моя анкета", "⚙️ Изменить параметры"],
-        ["💾 Сохранить ответ", "📑 Сохранённые ответы"],
+        ["💾 Сохранить в файл", "📑 История ответов"],
         ["🔁 Начать заново"],
     ],
     resize_keyboard=True,
@@ -244,12 +244,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user_states.get(user_id) or {"mode": None, "step": 0, "data": {}}
 
 
-    if text == "💾 Сохранить ответ":
+    if text == "💾 Сохранить в файл":
         logger.info(f"User {user_id} ({name}) saving last reply to file")
         await _save_last_to_file(update, user_id)
         return
 
-    if text == "📑 Сохранённые ответы":
+    if text == "📑 История ответов":
         logger.info(f"User {user_id} ({name}) viewing saved programs history")
         await _show_saved_programs(update, user_id)
         return
