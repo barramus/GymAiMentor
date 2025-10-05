@@ -254,6 +254,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = phys.get("name")
     completed = bool(data.get("physical_data_completed"))
     state = user_states.get(user_id) or {"mode": None, "step": 0, "data": {}}
+    
+    logger.debug(f"handle_message - user_id: {user_id}, text: {text[:50]}, state.mode: {state.get('mode')}, completed: {completed}")
 
 
     if text == "💾 Сохранить в файл":
@@ -848,6 +850,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Уровень
     if state.get("mode") == "awaiting_level":
+        logger.debug(f"awaiting_level triggered - text: {text}, state: {state}")
         if text not in LEVEL_CHOICES:
             await update.message.reply_text(
                 "Пожалуйста, выбери уровень кнопкой ниже:",
@@ -855,6 +858,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         level = "опытный" if ("Опыт" in text or "🔥" in text) else "начинающий"
+        logger.debug(f"Level selected: {level}")
         
         # Сохраняем уровень и переходим к выбору мышечной группы
         user_states[user_id] = {
