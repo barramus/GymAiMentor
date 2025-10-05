@@ -453,7 +453,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
             await update.message.reply_text("Как тебя зовут?")
             return
-        user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
+        # Если имя уже есть, добавляем его в state["data"]
+        user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {"name": name}}
         await update.message.reply_text(
             f"{name}, выбери свою цель тренировок ⬇️",
             reply_markup=GOAL_KEYBOARD,
@@ -509,12 +510,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not text:
             await update.message.reply_text("Напиши, пожалуйста, имя.")
             return
-        phys["name"] = _normalize_name(text)
+        normalized_name = _normalize_name(text)
+        phys["name"] = normalized_name
         data["physical_data"] = phys
         save_user_data(user_id, data)
-        user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {}}
+        # Добавляем имя в state["data"], чтобы оно попало в финальное сохранение
+        user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {"name": normalized_name}}
         await update.message.reply_text(
-            f"{phys['name']}, выбери свою цель тренировок ⬇️",
+            f"{normalized_name}, выбери свою цель тренировок ⬇️",
             reply_markup=GOAL_KEYBOARD,
         )
         return
@@ -522,8 +525,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Цель
     if state.get("mode") == "awaiting_goal":
         if text in GOAL_MAPPING:
-            # цель выбрана — идём дальше к полу
-            user_states[user_id] = {"mode": "awaiting_gender", "step": 0, "data": {"target": GOAL_MAPPING[text]}}
+            # цель выбрана — идём дальше к полу, сохраняем имя из предыдущего шага
+            user_states[user_id] = {
+                "mode": "awaiting_gender", 
+                "step": 0, 
+                "data": {**state["data"], "target": GOAL_MAPPING[text]}
+            }
             await update.message.reply_text("Укажи свой пол:", reply_markup=GENDER_KEYBOARD)
             return
 
@@ -881,6 +888,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_user_data(user_id, data)
 
         logger.info(f"User {user_id} ({base.get('name')}) completed registration with muscle group: {muscle_group}")
+        logger.debug(f"Saved physical_data: {base}")
 
         progress_msg = await update.message.reply_text("⏳ Спасибо! Формирую твою персональную программу…")
         start_time = time.time()
