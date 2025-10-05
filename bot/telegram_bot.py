@@ -79,6 +79,17 @@ VARIATIONS_KEYBOARD = ReplyKeyboardMarkup(
     one_time_keyboard=True,
 )
 
+MUSCLE_GROUPS_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["🦵 Упор на ноги", "🍑 Упор на ягодицы"],
+        ["🔙 Упор на спину", "💪 Упор на плечи и руки"],
+        ["🎲 Сбалансированная программа"],
+        ["◀️ Назад в меню"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
+
 EDIT_PARAMS_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["👤 Имя", "🔢 Возраст"],
@@ -308,14 +319,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "🆕 Другая программа":
-        # Показываем меню вариаций
+        # Показываем меню выбора группы мышц
         await update.message.reply_text(
-            "Выбери стиль программы ⬇️",
+            "Выбери акцент программы на группу мышц ⬇️",
+            reply_markup=MUSCLE_GROUPS_KEYBOARD
+        )
+        return
+
+    # Обработка выбора группы мышц - сохраняем в состояние и показываем стили
+    muscle_groups_map = {
+        "🦵 Упор на ноги": "ноги",
+        "🍑 Упор на ягодицы": "ягодицы",
+        "🔙 Упор на спину": "спина",
+        "💪 Упор на плечи и руки": "плечи и руки",
+        "🎲 Сбалансированная программа": "все группы мышц сбалансированно",
+    }
+    
+    if text in muscle_groups_map:
+        # Сохраняем выбор группы мышц в состояние
+        user_states[user_id] = {
+            "mode": "choosing_variation", 
+            "step": 0, 
+            "data": {"muscle_group": muscle_groups_map[text]}
+        }
+        await update.message.reply_text(
+            f"Отлично! Программа с акцентом на {muscle_groups_map[text]}.\n\nТеперь выбери стиль тренировок ⬇️",
             reply_markup=VARIATIONS_KEYBOARD
         )
         return
 
-    # Обработка вариаций программ
+    # Обработка вариаций программ (после выбора группы мышц)
     variation_map = {
         "💪 Больше базовых": "Сделай акцент на базовые многосуставные упражнения (приседания, становая, жимы, подтягивания).",
         "🎯 Больше изоляции": "Добавь больше изолирующих упражнений для проработки отдельных мышечных групп.",
@@ -338,8 +371,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
+        # Получаем выбранную группу мышц из состояния (если есть)
+        muscle_group = state.get("data", {}).get("muscle_group", "")
+        
         # Логируем запрос
-        logger.info(f"User {user_id} ({name}) requested program variation: {text}")
+        logger.info(f"User {user_id} ({name}) requested program variation: {text}, muscle_group: {muscle_group}")
         
         progress_msg = await update.message.reply_text("⏳ Генерирую программу...")
         start_time = time.time()
@@ -347,6 +383,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
             variation = variation_map[text]
+            
+            # Добавляем акцент на группу мышц, если выбрана
+            if muscle_group:
+                variation += f" Сделай ОСОБЫЙ АКЦЕНТ на {muscle_group}. Включи больше упражнений для этой группы мышц."
             
             # Генерация с вариацией
             plan = await agent.get_program(variation)
@@ -380,6 +420,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan = _sanitize_for_tg(plan)
         LAST_REPLIES[user_id] = plan
         set_last_reply(user_id, plan)
+        
+        # Очищаем состояние после генерации
+        user_states.pop(user_id, None)
         
         # Логируем успешную отправку
         logger.info(f"Program sent to user {user_id}, length: {len(plan)} chars")
