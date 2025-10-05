@@ -1,15 +1,58 @@
-# app/storage.py
 import json
 import os
 import copy
 import time
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
-# -------------------- Структура по умолчанию --------------------
+
+def validate_age(text: str) -> Tuple[bool, Optional[int], str]:
+    """Проверяет корректность возраста. Возвращает (успех, значение, сообщение об ошибке)."""
+    try:
+        age = int(text.strip())
+        if 10 <= age <= 100:
+            return True, age, ""
+        return False, None, "Возраст должен быть от 10 до 100 лет."
+    except (ValueError, AttributeError):
+        return False, None, "Пожалуйста, введи число (например: 25)."
+
+
+def validate_height(text: str) -> Tuple[bool, Optional[int], str]:
+    """Проверяет корректность роста в см."""
+    try:
+        height = int(text.strip())
+        if 100 <= height <= 250:
+            return True, height, ""
+        return False, None, "Рост должен быть от 100 до 250 см."
+    except (ValueError, AttributeError):
+        return False, None, "Пожалуйста, введи число в сантиметрах (например: 175)."
+
+
+def validate_weight(text: str) -> Tuple[bool, Optional[float], str]:
+    """Проверяет корректность веса в кг."""
+    try:
+        weight = float(text.strip().replace(',', '.'))
+        if 30 <= weight <= 300:
+            return True, round(weight, 1), ""
+        return False, None, "Вес должен быть от 30 до 300 кг."
+    except (ValueError, AttributeError):
+        return False, None, "Пожалуйста, введи число в килограммах (например: 70 или 70.5)."
+
+
+def validate_schedule(text: str) -> Tuple[bool, Optional[int], str]:
+    """Проверяет корректность частоты тренировок в неделю."""
+    try:
+        schedule = int(text.strip())
+        if 1 <= schedule <= 7:
+            return True, schedule, ""
+        return False, None, "Частота тренировок должна быть от 1 до 7 раз в неделю."
+    except (ValueError, AttributeError):
+        return False, None, "Пожалуйста, введи число (например: 3)."
+
+
 
 DEFAULT_USER_DATA: Dict[str, Any] = {
-    "history": [],  # список пар (user_msg, bot_msg) для справки
+    "history": [],
     "physical_data": {
         "name": None,          # Имя пользователя
         "gender": None,        # "мужской"/"женский"
@@ -29,7 +72,6 @@ DEFAULT_USER_DATA: Dict[str, Any] = {
     "programs": [],            # опционально, если копите версии
 }
 
-# -------------------- Вспомогательное --------------------
 
 def _user_path(user_id: str, folder: str) -> Path:
     return Path(folder) / f"{user_id}.json"
@@ -83,7 +125,6 @@ def _ensure_structure(data: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-# -------------------- IO --------------------
 
 def load_user_data(user_id: str, folder: str = "data/users") -> Dict[str, Any]:
     """
@@ -126,7 +167,6 @@ def save_user_data(user_id: str, data: Dict[str, Any], folder: str = "data/users
                 pass
 
 
-# -------------------- Удобные геттеры/сеттеры --------------------
 
 def get_user_name(user_id: str, folder: str = "data/users") -> Optional[str]:
     d = load_user_data(user_id, folder)
@@ -170,7 +210,97 @@ def get_last_program(user_id: str, folder: str = "data/users") -> Optional[str]:
     return d.get("last_program")
 
 
-# --------- История упражнений (оставляем на будущее, используется частично) ---------
+def set_user_goal(user_id: str, goal: str, folder: str = "data/users") -> Dict[str, Any]:
+    """
+    Устанавливает новую цель тренировок для пользователя.
+    Добавляет запись в историю об изменении цели.
+    """
+    d = load_user_data(user_id, folder)
+    old_goal = (d.get("physical_data") or {}).get("target")
+    
+    # Обновляем цель
+    d.setdefault("physical_data", {}).update({"target": goal})
+    
+    # Добавляем в историю
+    if old_goal and old_goal != goal:
+        hist = d.get("history", [])
+        hist.append((
+            f"🎯 Изменение цели с '{old_goal}' на '{goal}'",
+            f"✅ Цель успешно изменена. Новая цель: {goal}"
+        ))
+        d["history"] = hist
+    
+    save_user_data(user_id, d, folder)
+    return d
+
+
+def update_user_param(user_id: str, param_name: str, value: Any, folder: str = "data/users") -> Dict[str, Any]:
+    """
+    Обновляет отдельный параметр в анкете пользователя.
+    param_name: 'weight', 'schedule', 'restrictions', 'level', 'age', 'height', 'goal'
+    """
+    d = load_user_data(user_id, folder)
+    old_value = (d.get("physical_data") or {}).get(param_name)
+    
+    # Обновляем параметр
+    d.setdefault("physical_data", {}).update({param_name: value})
+    
+    # Добавляем в историю
+    if old_value != value:
+        param_labels = {
+            'weight': '⚖️ вес',
+            'schedule': '📅 частоту тренировок',
+            'restrictions': '⚠️ ограничения',
+            'level': '🏋️ уровень подготовки',
+            'age': '🎂 возраст',
+            'height': '📏 рост',
+            'goal': '🎯 желаемый вес'
+        }
+        label = param_labels.get(param_name, param_name)
+        hist = d.get("history", [])
+        hist.append((
+            f"✏️ Изменение: {label}",
+            f"Новое значение: {value}" + (f" (было: {old_value})" if old_value else "")
+        ))
+        d["history"] = hist
+    
+    save_user_data(user_id, d, folder)
+    return d
+
+
+def get_user_profile_text(user_id: str, folder: str = "data/users") -> str:
+    """
+    Возвращает форматированный текст анкеты пользователя.
+    """
+    d = load_user_data(user_id, folder)
+    phys = d.get("physical_data") or {}
+    
+    # Иконки для целей
+    goal_icons = {
+        "похудение": "🏃‍♂️",
+        "набор массы": "🏋️‍♂️",
+        "поддержание формы": "🧘"
+    }
+    
+    target = phys.get('target') or 'не указана'
+    target_icon = goal_icons.get(target, "🎯")
+    
+    text = f"""📋 **Твоя анкета:**
+
+👤 Имя: {phys.get('name') or 'не указано'}
+{target_icon} Цель: {target}
+⚧ Пол: {phys.get('gender') or 'не указано'}
+🎂 Возраст: {phys.get('age') or 'не указано'} лет
+📏 Рост: {phys.get('height') or 'не указано'} см
+⚖️ Текущий вес: {phys.get('weight') or 'не указано'} кг
+🎯 Желаемый вес: {phys.get('goal') or 'не указано'} кг
+🏋️ Уровень: {phys.get('level') or 'не указано'}
+📅 Частота: {phys.get('schedule') or 'не указано'} раз/неделю
+⚠️ Ограничения: {phys.get('restrictions') or 'нет'}"""
+    
+    return text
+
+
 
 def get_lift_history(user_id: str, lift_key: str, folder: str = "data/users"):
     d = load_user_data(user_id, folder)

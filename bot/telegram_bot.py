@@ -12,13 +12,16 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from app.agent import FitnessAgent
-from app.storage import load_user_data, save_user_data, set_last_reply, get_last_reply
+from app.storage import (
+    load_user_data, save_user_data, set_last_reply, get_last_reply, 
+    set_user_goal, update_user_param, get_user_profile_text,
+    validate_age, validate_height, validate_weight, validate_schedule
+)
 
 logger = logging.getLogger("bot.telegram_bot")
 
-# В памяти держим последний ответ, чтобы можно было сохранить в файл
 LAST_REPLIES: dict[str, str] = {}
-# Простое состояние пользователя
+
 user_states: Dict[str, dict] = {}
 
 GOAL_MAPPING = {
@@ -52,11 +55,23 @@ LEVEL_KEYBOARD = ReplyKeyboardMarkup(
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["❓ Задать вопрос AI-тренеру"],
-        ["📄 Другая программа"],
+        ["📄 Другая программа", "🎯 Изменить цель"],
+        ["📋 Моя анкета", "⚙️ Изменить параметры"],
         ["💾 Сохранить ответ", "🔁 Начать заново"],
     ],
     resize_keyboard=True,
     is_persistent=True,
+)
+
+EDIT_PARAMS_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["⚖️ Текущий вес", "🎯 Желаемый вес"],
+        ["📅 Изменить частоту", "🏋️ Изменить уровень"],
+        ["⚠️ Изменить ограничения"],
+        ["◀️ Назад в меню"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True,
 )
 
 
@@ -178,6 +193,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _save_last_to_file(update, user_id)
         return
 
+    if text == "📋 Моя анкета":
+        if not completed:
+            await update.message.reply_text(
+                "Сначала нужно заполнить анкету. Используй кнопку «🔁 Начать заново» для заполнения.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
+        profile_text = get_user_profile_text(user_id)
+        await update.message.reply_text(profile_text, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if text == "⚙️ Изменить параметры":
+        if not completed:
+            await update.message.reply_text(
+                "Сначала нужно заполнить анкету. Используй кнопку «🔁 Начать заново» для заполнения.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
+        await update.message.reply_text(
+            "Выбери параметр для изменения ⬇️",
+            reply_markup=EDIT_PARAMS_KEYBOARD,
+        )
+        return
+
+    if text == "◀️ Назад в меню":
+        user_states.pop(user_id, None)
+        await update.message.reply_text("Главное меню ⬇️", reply_markup=MAIN_KEYBOARD)
+        return
+
+    if text == "🎯 Изменить цель":
+        # Проверяем, заполнена ли анкета
+        if not completed:
+            await update.message.reply_text(
+                "Сначала нужно заполнить анкету. Используй кнопку «🔁 Начать заново» для заполнения.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
+            
+        # Переход в режим выбора новой цели
+        user_states[user_id] = {"mode": "changing_goal", "step": 0, "data": {}}
+        
+        # Показываем текущую цель
+        current_goal = phys.get("target", "не указана")
+        await update.message.reply_text(
+            f"Текущая цель: {current_goal}\n\nВыбери новую цель тренировок ⬇️",
+            reply_markup=GOAL_KEYBOARD,
+        )
+        return
+
     if text == "📄 Другая программа":
         await update.message.reply_text("Думаю над ответом на твой запрос…")
         try:
@@ -261,6 +325,138 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Пожалуйста, выбери цель кнопкой ниже:", reply_markup=GOAL_KEYBOARD)
         return
 
+    # Обработчики редактирования параметров
+    if text == "⚖️ Текущий вес":
+        user_states[user_id] = {"mode": "editing_weight", "step": 0, "data": {}}
+        current_weight = phys.get("weight", "не указан")
+        await update.message.reply_text(
+            f"Текущий вес: {current_weight} кг\n\nВведи новый текущий вес в килограммах (например: 75 или 75.5):"
+        )
+        return
+
+    if text == "🎯 Желаемый вес":
+        user_states[user_id] = {"mode": "editing_goal_weight", "step": 0, "data": {}}
+        current_goal = phys.get("goal", "не указан")
+        await update.message.reply_text(
+            f"Желаемый вес: {current_goal} кг\n\nВведи новый желаемый вес в килограммах (например: 70 или 70.5):"
+        )
+        return
+
+    if text == "📅 Изменить частоту":
+        user_states[user_id] = {"mode": "editing_schedule", "step": 0, "data": {}}
+        current_schedule = phys.get("schedule", "не указана")
+        await update.message.reply_text(
+            f"Текущая частота: {current_schedule} раз/неделю\n\nСколько раз в неделю сможешь посещать зал (1-7)?"
+        )
+        return
+
+    if text == "⚠️ Изменить ограничения":
+        user_states[user_id] = {"mode": "editing_restrictions", "step": 0, "data": {}}
+        current_restrictions = phys.get("restrictions", "нет")
+        await update.message.reply_text(
+            f"Текущие ограничения: {current_restrictions}\n\nОпиши новые ограничения по здоровью или предпочтения в тренировках (или напиши 'нет'):"
+        )
+        return
+
+    if text == "🏋️ Изменить уровень":
+        user_states[user_id] = {"mode": "editing_level", "step": 0, "data": {}}
+        current_level = phys.get("level", "не указан")
+        await update.message.reply_text(
+            f"Текущий уровень: {current_level}\n\nВыбери новый уровень подготовки:",
+            reply_markup=LEVEL_KEYBOARD,
+        )
+        return
+
+    # Изменение цели (после заполнения анкеты)
+    if state.get("mode") == "changing_goal":
+        if text in GOAL_MAPPING:
+            # Сохраняем новую цель через специальную функцию
+            set_user_goal(user_id, GOAL_MAPPING[text])
+            
+            # Очищаем состояние
+            user_states.pop(user_id, None)
+            
+            # Подтверждение
+            await update.message.reply_text(
+                f"✅ Цель успешно изменена на: {text}\n\nТеперь твои программы тренировок будут адаптированы под новую цель.",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
+        
+        # Если прислали что-то кроме кнопки
+        await update.message.reply_text("Пожалуйста, выбери цель кнопкой ниже:", reply_markup=GOAL_KEYBOARD)
+        return
+
+    # Обработка ввода нового текущего веса
+    if state.get("mode") == "editing_weight":
+        valid, value, error = validate_weight(text)
+        if not valid:
+            await update.message.reply_text(f"❌ {error}\n\nПопробуй ещё раз:")
+            return
+        update_user_param(user_id, "weight", value)
+        user_states.pop(user_id, None)
+        await update.message.reply_text(
+            f"✅ Текущий вес успешно обновлён: {value} кг",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    # Обработка ввода нового желаемого веса
+    if state.get("mode") == "editing_goal_weight":
+        valid, value, error = validate_weight(text)
+        if not valid:
+            await update.message.reply_text(f"❌ {error}\n\nПопробуй ещё раз:")
+            return
+        update_user_param(user_id, "goal", value)
+        user_states.pop(user_id, None)
+        await update.message.reply_text(
+            f"✅ Желаемый вес успешно обновлён: {value} кг",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    # Обработка ввода новой частоты
+    if state.get("mode") == "editing_schedule":
+        valid, value, error = validate_schedule(text)
+        if not valid:
+            await update.message.reply_text(f"❌ {error}\n\nПопробуй ещё раз:")
+            return
+        update_user_param(user_id, "schedule", value)
+        user_states.pop(user_id, None)
+        await update.message.reply_text(
+            f"✅ Частота тренировок успешно обновлена: {value} раз/неделю",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    # Обработка ввода новых ограничений
+    if state.get("mode") == "editing_restrictions":
+        restrictions = text if text.lower() not in ["нет", "no", "-"] else None
+        update_user_param(user_id, "restrictions", restrictions)
+        user_states.pop(user_id, None)
+        await update.message.reply_text(
+            f"✅ Ограничения успешно обновлены: {restrictions or 'нет'}",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    # Обработка выбора нового уровня
+    if state.get("mode") == "editing_level":
+        if text not in LEVEL_CHOICES:
+            await update.message.reply_text(
+                "Пожалуйста, выбери уровень кнопкой ниже:",
+                reply_markup=LEVEL_KEYBOARD,
+            )
+            return
+        level = "опытный" if ("Опыт" in text or "🔥" in text) else "начинающий"
+        update_user_param(user_id, "level", level)
+        user_states.pop(user_id, None)
+        await update.message.reply_text(
+            f"✅ Уровень подготовки успешно обновлён: {level}",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
     # Пол
     if state.get("mode") == "awaiting_gender":
         g = _normalize_gender(text)
@@ -287,9 +483,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Основной опрос (возраст → ... → частота)
     if state.get("mode") == "survey":
+        # Валидация предыдущего ответа
         if state["step"] > 1:
             prev_key = questions[state["step"] - 2][0]
-            state["data"][prev_key] = text
+            
+            # Применяем валидацию в зависимости от поля
+            if prev_key == "age":
+                valid, value, error = validate_age(text)
+                if not valid:
+                    await update.message.reply_text(f"❌ {error}\n\nПопробуй ещё раз:")
+                    return
+                state["data"][prev_key] = value
+            elif prev_key == "height":
+                valid, value, error = validate_height(text)
+                if not valid:
+                    await update.message.reply_text(f"❌ {error}\n\nПопробуй ещё раз:")
+                    return
+                state["data"][prev_key] = value
+            elif prev_key == "weight":
+                valid, value, error = validate_weight(text)
+                if not valid:
+                    await update.message.reply_text(f"❌ {error}\n\nПопробуй ещё раз:")
+                    return
+                state["data"][prev_key] = value
+            elif prev_key == "goal":
+                valid, value, error = validate_weight(text)
+                if not valid:
+                    await update.message.reply_text(f"❌ {error}\n\nПопробуй ещё раз:")
+                    return
+                state["data"][prev_key] = value
+            elif prev_key == "restrictions":
+                # Для ограничений валидация не нужна, принимаем любой текст
+                restrictions = text if text.lower() not in ["нет", "no", "-"] else None
+                state["data"][prev_key] = restrictions
+            elif prev_key == "schedule":
+                valid, value, error = validate_schedule(text)
+                if not valid:
+                    await update.message.reply_text(f"❌ {error}\n\nПопробуй ещё раз:")
+                    return
+                state["data"][prev_key] = value
+            else:
+                state["data"][prev_key] = text
+        
         if state["step"] <= len(questions):
             idx = state["step"] - 1
             _, qtext = questions[idx]
