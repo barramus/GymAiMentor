@@ -339,8 +339,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎲 Сбалансированная программа": "все группы мышц сбалансированно",
     }
     
-    # Проверяем: срабатывает ТОЛЬКО если пользователь НЕ в режиме awaiting_muscle_group
-    if text in muscle_groups_map and state.get("mode") != "awaiting_muscle_group":
+    # Проверяем: срабатывает ТОЛЬКО если пользователь НЕ в режиме awaiting_muscle_group или editing_muscle_group
+    if text in muscle_groups_map and state.get("mode") not in ["awaiting_muscle_group", "editing_muscle_group"]:
         # Сохраняем выбор группы мышц в состояние
         user_states[user_id] = {
             "mode": "choosing_variation", 
