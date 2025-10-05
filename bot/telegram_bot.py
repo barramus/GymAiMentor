@@ -783,7 +783,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Основной опрос (возраст → ... → частота)
     if state.get("mode") == "survey":
-        # Валидация предыдущего ответа
+        logger.debug(f"Survey mode - step={state['step']}, current data: {state['data']}, user text: {text[:50]}")
+        # Валидация предыдущего ответа (если это не первый вход в опрос)
         if state["step"] > 1:
             prev_key = questions[state["step"] - 2][0]
             
@@ -825,13 +826,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 state["data"][prev_key] = text
         
+        # Проверяем: есть ли еще вопросы?
         if state["step"] <= len(questions):
             idx = state["step"] - 1
             _, qtext = questions[idx]
             user_states[user_id] = {"mode": "survey", "step": state["step"] + 1, "data": state["data"]}
             await update.message.reply_text(qtext)
             return
-        # уровень подготовки
+        
+        # Все вопросы пройдены → переход к выбору уровня подготовки
+        logger.debug(f"Survey completed - state[data]: {state['data']}")
         user_states[user_id] = {"mode": "awaiting_level", "step": 0, "data": state["data"]}
         await update.message.reply_text("Выбери свой уровень подготовки:", reply_markup=LEVEL_KEYBOARD)
         return
@@ -880,6 +884,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         muscle_group = muscle_groups_map[text]
         finished = {**state["data"], "preferred_muscle_group": muscle_group}
         user_states.pop(user_id, None)
+
+        logger.debug(f"Before save - state[data]: {state['data']}")
+        logger.debug(f"Before save - finished: {finished}")
 
         base = data.get("physical_data") or {}
         base.update(finished)
