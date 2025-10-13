@@ -17,7 +17,7 @@ Python 3.8+ • [python-telegram-bot 20.7](https://github.com/python-telegram-bo
 
 ```bash
 git clone <your-repo-url>
-cd GymAiMentor_new/GymAiMentor
+cd GymAiMentor
 python3 -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
