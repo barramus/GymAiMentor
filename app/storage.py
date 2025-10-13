@@ -70,7 +70,7 @@ DEFAULT_USER_DATA: Dict[str, Any] = {
     "last_reply": None,        # последний текст (любого ответа)
     "last_program": None,      # последняя СГЕНЕРИРОВАННАЯ ПРОГРАММА
     "physical_data_completed": False,
-    "programs": [],            # опционально, если копите версии
+    "programs": [],            # опционально
 }
 
 
@@ -219,10 +219,10 @@ def set_user_goal(user_id: str, goal: str, folder: str = "data/users") -> Dict[s
     d = load_user_data(user_id, folder)
     old_goal = (d.get("physical_data") or {}).get("target")
     
-    # Обновляем цель
+    # обновляем цель
     d.setdefault("physical_data", {}).update({"target": goal})
     
-    # Добавляем в историю
+    # добавляем в историю
     if old_goal and old_goal != goal:
         hist = d.get("history", [])
         hist.append((
@@ -243,10 +243,10 @@ def update_user_param(user_id: str, param_name: str, value: Any, folder: str = "
     d = load_user_data(user_id, folder)
     old_value = (d.get("physical_data") or {}).get(param_name)
     
-    # Обновляем параметр
+    # обновляем параметр
     d.setdefault("physical_data", {}).update({param_name: value})
     
-    # Добавляем в историю
+    # добавляем в историю
     if old_value != value:
         param_labels = {
             'name': '👤 имя',
@@ -278,7 +278,7 @@ def get_user_profile_text(user_id: str, folder: str = "data/users") -> str:
     d = load_user_data(user_id, folder)
     phys = d.get("physical_data") or {}
     
-    # Иконки для целей
+    # иконки для целей
     goal_icons = {
         "похудение": "🏃‍♂️",
         "набор массы": "🏋️‍♂️",
@@ -288,7 +288,7 @@ def get_user_profile_text(user_id: str, folder: str = "data/users") -> str:
     target = phys.get('target') or 'не указана'
     target_icon = goal_icons.get(target, "🎯")
     
-    # Форматируем акцент на мышечную группу
+    # форматируем акцент на мышечную группу
     muscle_group_display = {
         "ноги": "🦵 Ноги",
         "ягодицы": "🍑 Ягодицы",
@@ -353,7 +353,7 @@ def save_lift_history(
 
     hist = rec.get("history") or []
     hist.append(entry)
-    rec["history"] = hist[-50:]  # ограничим хвост избыточной истории
+    rec["history"] = hist[-50:]
 
     lifts[lift_key] = rec
     d["lifts"] = lifts

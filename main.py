@@ -46,7 +46,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_states.pop(user_id, None)
 
     if not name:
-        # Начинаем с имени
+        # начинаем с имени
         user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
         await update.message.reply_text(
             "Привет! Я твой персональный фитнес-тренер GymAiMentor 💪🏼\n"
@@ -55,7 +55,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Имя уже есть — сразу просим цель (ВАЖНО: без лишнего отступа)
+    # имя уже есть — сразу просим цель (ВАЖНО: без лишнего отступа)
     user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {"name": name}}
     await update.message.reply_text(
         f"{name}, выбери свою цель тренировок ⬇️",

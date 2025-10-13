@@ -9,9 +9,9 @@ from gigachat.models import Chat, Messages, MessagesRole
 from app.storage import load_user_data, save_user_data
 
 GIGACHAT_MODEL: str = os.getenv("GIGACHAT_MODEL", "GigaChat-2-Max").strip()
-GIGACHAT_TEMPERATURE: float = float(os.getenv("GIGACHAT_TEMPERATURE", "0.35"))  # Увеличено для разнообразия
-GIGACHAT_MAX_TOKENS: int = int(os.getenv("GIGACHAT_MAX_TOKENS", "5000"))  # Увеличено для детальных программ
-GIGACHAT_TIMEOUT: int = int(os.getenv("GIGACHAT_TIMEOUT", "90"))  # Увеличено т.к. больше токенов
+GIGACHAT_TEMPERATURE: float = float(os.getenv("GIGACHAT_TEMPERATURE", "0.35"))
+GIGACHAT_MAX_TOKENS: int = int(os.getenv("GIGACHAT_MAX_TOKENS", "5000"))
+GIGACHAT_TIMEOUT: int = int(os.getenv("GIGACHAT_TIMEOUT", "90"))
 GIGACHAT_RETRIES: int = int(os.getenv("GIGACHAT_RETRIES", "3"))
 
 
@@ -218,7 +218,7 @@ class FitnessAgent:
                 Messages(role=MessagesRole.USER, content=f"Анкета:\n{self._phys_prompt}\n\nВопрос:\n{question}"),
             ],
             temperature=min(0.35, GIGACHAT_TEMPERATURE),
-            max_tokens=min(2500, GIGACHAT_MAX_TOKENS),  # Увеличено для развёрнутых ответов
+            max_tokens=min(2500, GIGACHAT_MAX_TOKENS),
             model=GIGACHAT_MODEL,
         )
 
@@ -226,9 +226,9 @@ class FitnessAgent:
             try:
                 with GigaChat(credentials=self.token, verify_ssl_certs=False, timeout=GIGACHAT_TIMEOUT) as giga:
                     try:
-                        resp = giga.chat(payload)  # новые SDK
+                        resp = giga.chat(payload)
                     except TypeError:
-                        resp = getattr(giga, "chat")(payload, model=GIGACHAT_MODEL)  # старые SDK
+                        resp = getattr(giga, "chat")(payload, model=GIGACHAT_MODEL)
                     return resp.choices[0].message.content
             except Exception as e:
                 raise e
@@ -246,7 +246,7 @@ class FitnessAgent:
 
 
     def _format_physical_data(self, d: dict) -> str:
-        # Базовая информация
+        # базовая информация
         result = (
             f"Цель: {d.get('target') or 'не указана'}\n"
             f"Пол: {d.get('gender') or 'не указано'}\n"
@@ -259,10 +259,10 @@ class FitnessAgent:
             f"Уровень: {d.get('level') or 'не указано'}"
         )
         
-        # Добавляем предпочитаемую группу мышц если указана
+        # добавляем предпочитаемую группу мышц если указана
         preferred_group = d.get('preferred_muscle_group')
         if preferred_group and preferred_group != 'сбалансированно':
-            # Расширенные рекомендации с конкретными примерами
+            # расширенные рекомендации с конкретными примерами
             exercises_details = {
                 'ноги': {
                     'examples': 'приседания (классические, фронтальные, болгарские, гакк, в Смите), выпады (вперед, назад, в сторону, проходкой), жим ногами под разными углами, разгибания/сгибания ног, зашагивания на платформу, приседания с паузой',

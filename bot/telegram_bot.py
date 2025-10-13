@@ -184,7 +184,6 @@ async def _show_saved_programs(update: Update, user_id: str):
     user_dir = Path("data/users")
     pattern = f"program_{user_id}_*.txt"
     
-    # Находим все файлы пользователя
     files = list(user_dir.glob(pattern))
     
     if not files:
@@ -193,10 +192,8 @@ async def _show_saved_programs(update: Update, user_id: str):
         )
         return
     
-    # Сортируем по дате (последние сверху)
     files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     
-    # Берем последние 10
     recent_files = files[:10]
     
     await update.effective_chat.send_message(
@@ -204,7 +201,6 @@ async def _show_saved_programs(update: Update, user_id: str):
     )
     
     for file_path in recent_files:
-        # Извлекаем timestamp из имени файла
         try:
             timestamp = int(file_path.stem.split('_')[-1])
             date_str = time.strftime("%d.%m.%Y %H:%M", time.localtime(timestamp))
@@ -248,7 +244,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     text = (update.message.text or "").strip()
 
-    # Текущие данные пользователя
+    # текущие данные пользователя
     data = load_user_data(user_id)
     phys = data.get("physical_data") or {}
     name = phys.get("name")
@@ -300,7 +296,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "🎯 Изменить цель":
-        # Проверяем, заполнена ли анкета
+        # проверяем, заполнена ли анкета
         if not completed:
             await update.message.reply_text(
                 "Сначала нужно заполнить анкету. Используй кнопку «🔁 Начать заново» для заполнения.",
@@ -310,10 +306,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         logger.info(f"User {user_id} ({name}) changing goal from {phys.get('target')}")
         
-        # Переход в режим выбора новой цели
+        # переход в режим выбора новой цели
         user_states[user_id] = {"mode": "changing_goal", "step": 0, "data": {}}
         
-        # Показываем текущую цель
+        # показываем текущую цель
         current_goal = phys.get("target", "не указана")
         await update.message.reply_text(
             f"Текущая цель: {current_goal}\n\nВыбери новую цель тренировок ⬇️",
@@ -322,15 +318,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "🆕 Другая программа":
-        # Показываем меню выбора группы мышц
+        # показываем меню выбора группы мышц
         await update.message.reply_text(
             "Выбери акцент программы на группу мышц ⬇️",
             reply_markup=MUSCLE_GROUPS_KEYBOARD
         )
         return
 
-    # Обработка выбора группы мышц - сохраняем в состояние и показываем стили
-    # ВАЖНО: этот блок только для кнопки "🆕 Другая программа", НЕ для survey!
     muscle_groups_map = {
         "🦵 Упор на ноги": "ноги",
         "🍑 Упор на ягодицы": "ягодицы",
@@ -339,9 +333,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎲 Сбалансированная программа": "все группы мышц сбалансированно",
     }
     
-    # Проверяем: срабатывает ТОЛЬКО если пользователь НЕ в режиме awaiting_muscle_group или editing_muscle_group
     if text in muscle_groups_map and state.get("mode") not in ["awaiting_muscle_group", "editing_muscle_group"]:
-        # Сохраняем выбор группы мышц в состояние
         user_states[user_id] = {
             "mode": "choosing_variation", 
             "step": 0, 
@@ -353,7 +345,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Обработка вариаций программ (после выбора группы мышц)
     variation_map = {
         "💪 Больше базовых": "Сделай акцент на базовые многосуставные упражнения (приседания, становая, жимы, подтягивания и тому подобные базовые силовые упражнения для тренажерного зала).",
         "🎯 Больше изоляции": "Добавь больше изолирующих упражнений для проработки отдельных мышечных групп.",
@@ -376,10 +367,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Получаем выбранную группу мышц из состояния (если есть)
         muscle_group = state.get("data", {}).get("muscle_group", "")
         
-        # Логируем запрос
         logger.info(f"User {user_id} ({name}) requested program variation: {text}, muscle_group: {muscle_group}")
         
         progress_msg = await update.message.reply_text("⏳ Генерирую программу...")
@@ -389,11 +378,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             agent = FitnessAgent(token=os.getenv("GIGACHAT_TOKEN"), user_id=user_id)
             variation = variation_map[text]
             
-            # Добавляем акцент на группу мышц, если выбрана
+            # добавляем акцент на группу мышц, если выбрана
             if muscle_group:
                 variation += f" Сделай ОСОБЫЙ АКЦЕНТ на {muscle_group}. Включи больше упражнений для этой группы мышц."
             
-            # Генерация с вариацией
+            # генерация с вариацией
             plan = await agent.get_program(variation)
             
             generation_time = time.time() - start_time
@@ -401,13 +390,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await progress_msg.edit_text("✨ Программа готова!")
             
-            # Обновляем время последней генерации
+            # обновляем время последней генерации
             last_generation_time[user_id] = current_time
             
         except Exception as e:
             logger.exception(f"Error generating program for user {user_id}")
             
-            # Различные типы ошибок
+            # различные типы ошибок
             error_msg = "❌ Не получилось сгенерировать программу.\n\n"
             
             if "timeout" in str(e).lower():
@@ -426,10 +415,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         LAST_REPLIES[user_id] = plan
         set_last_reply(user_id, plan)
         
-        # Очищаем состояние после генерации
+        # очищаем состояние после генерации
         user_states.pop(user_id, None)
         
-        # Логируем успешную отправку
+        # логируем успешную отправку
         logger.info(f"Program sent to user {user_id}, length: {len(plan)} chars")
         
         await _safe_send(update.effective_chat, plan, use_markdown=True)
@@ -439,7 +428,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🔁 Начать заново":
         logger.info(f"User {user_id} ({name}) restarting registration")
         
-        # Полный сброс: имя, анкета, история, последняя программа/ответ
+        # полный сброс: имя, анкета, история, последняя программа/ответ
         data["physical_data"] = {}                 # <- имя тоже очищаем
         data["physical_data_completed"] = False
         data["history"] = []
@@ -447,7 +436,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["last_reply"] = None
         save_user_data(user_id, data)
 
-        # Сбрасываем runtime-состояние и начинаем заново с вопроса про имя
+        # сбрасываем runtime-состояние и начинаем заново с вопроса про имя
         user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
         await update.message.reply_text("Заполним анкету заново 📝 Как тебя зовут?")
         return
@@ -457,7 +446,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_states[user_id] = {"mode": "awaiting_name", "step": 0, "data": {}}
             await update.message.reply_text("Как тебя зовут?")
             return
-        # Если имя уже есть, добавляем его в state["data"]
+        # если имя уже есть, добавляем его в state["data"]
         user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {"name": name}}
         await update.message.reply_text(
             f"{name}, выбери свою цель тренировок ⬇️",
@@ -509,7 +498,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _safe_send(update.effective_chat, answer, use_markdown=True)
         return
 
-    # Имя
+    # имя
     if state.get("mode") == "awaiting_name":
         if not text:
             await update.message.reply_text("Напиши, пожалуйста, имя.")
@@ -518,7 +507,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phys["name"] = normalized_name
         data["physical_data"] = phys
         save_user_data(user_id, data)
-        # Добавляем имя в state["data"], чтобы оно попало в финальное сохранение
+        # добавляем имя в state["data"], чтобы оно попало в финальное сохранение
         user_states[user_id] = {"mode": "awaiting_goal", "step": 0, "data": {"name": normalized_name}}
         await update.message.reply_text(
             f"{normalized_name}, выбери свою цель тренировок ⬇️",
@@ -526,7 +515,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Цель
+    # цель
     if state.get("mode") == "awaiting_goal":
         if text in GOAL_MAPPING:
             # цель выбрана — идём дальше к полу, сохраняем имя из предыдущего шага
@@ -542,7 +531,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Пожалуйста, выбери цель кнопкой ниже:", reply_markup=GOAL_KEYBOARD)
         return
 
-    # Обработчики редактирования параметров
+    # обработчики редактирования параметров
     if text == "👤 Имя":
         user_states[user_id] = {"mode": "editing_name", "step": 0, "data": {}}
         current_name = phys.get("name", "не указано")
@@ -617,27 +606,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Изменение цели (после заполнения анкеты)
+    # изменение цели (после заполнения анкеты)
     if state.get("mode") == "changing_goal":
         if text in GOAL_MAPPING:
-            # Сохраняем новую цель через специальную функцию
+            # сохраняем новую цель через специальную функцию
             set_user_goal(user_id, GOAL_MAPPING[text])
             
-            # Очищаем состояние
+            # очищаем состояние
             user_states.pop(user_id, None)
             
-            # Подтверждение
+            # подтверждение
             await update.message.reply_text(
                 f"✅ Цель успешно изменена на: {text}\n\nТеперь твои программы тренировок будут адаптированы под новую цель.",
                 reply_markup=MAIN_KEYBOARD,
             )
             return
         
-        # Если прислали что-то кроме кнопки
+        # если прислали что-то кроме кнопки
         await update.message.reply_text("Пожалуйста, выбери цель кнопкой ниже:", reply_markup=GOAL_KEYBOARD)
         return
 
-    # Обработка ввода нового имени
+    # обработка ввода нового имени
     if state.get("mode") == "editing_name":
         new_name = _normalize_name(text)
         if not new_name:
@@ -651,7 +640,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Обработка ввода нового возраста
+    # обработка ввода нового возраста
     if state.get("mode") == "editing_age":
         valid, value, error = validate_age(text)
         if not valid:
@@ -665,7 +654,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Обработка ввода нового текущего веса
+    # обработка ввода нового текущего веса
     if state.get("mode") == "editing_weight":
         valid, value, error = validate_weight(text)
         if not valid:
@@ -679,7 +668,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Обработка ввода нового желаемого веса
+    # обработка ввода нового желаемого веса
     if state.get("mode") == "editing_goal_weight":
         valid, value, error = validate_weight(text)
         if not valid:
@@ -693,7 +682,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Обработка ввода новой частоты
+    # обработка ввода новой частоты
     if state.get("mode") == "editing_schedule":
         valid, value, error = validate_schedule(text)
         if not valid:
@@ -707,7 +696,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Обработка ввода новых ограничений
+    # обработка ввода новых ограничений
     if state.get("mode") == "editing_restrictions":
         restrictions = text if text.lower() not in ["нет", "no", "-"] else None
         update_user_param(user_id, "restrictions", restrictions)
@@ -718,7 +707,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Обработка выбора нового уровня
+    # обработка выбора нового уровня
     if state.get("mode") == "editing_level":
         if text not in LEVEL_CHOICES:
             await update.message.reply_text(
@@ -735,7 +724,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Обработка изменения акцента на мышечную группу
+    # обработка изменения акцента на мышечную группу
     if state.get("mode") == "editing_muscle_group":
         muscle_groups_map = {
             "🦵 Упор на ноги": "ноги",
@@ -761,7 +750,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Пол
+    # пол
     if state.get("mode") == "awaiting_gender":
         g = _normalize_gender(text)
         if not g:
@@ -775,7 +764,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Сколько тебе лет?")
         return
 
-    # Последовательность вопросов
+    # последовательность вопросов
     questions = [
         ("age", "Сколько тебе лет?"),
         ("height", "Твой рост в сантиметрах?"),
@@ -785,16 +774,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("schedule", "Сколько раз в неделю можешь посещать тренажёрный зал?"),
     ]
 
-    # Основной опрос (возраст → ... → частота)
+    # основной опрос (возраст → ... → частота)
     if state.get("mode") == "survey":
         logger.debug(f"Survey mode - step={state['step']}, current data: {state.get('data', {})}, user text: {text[:50] if text else 'empty'}")
         
-        # Валидация предыдущего ответа (если это не первый вход в опрос)
+        # валидация предыдущего ответа (если это не первый вход в опрос)
         if state["step"] > 1:
             prev_key = questions[state["step"] - 2][0]
             logger.debug(f"Validating prev_key={prev_key}, text={text}")
             
-            # Применяем валидацию в зависимости от поля
+            # применяем валидацию в зависимости от поля
             if prev_key == "age":
                 valid, value, error = validate_age(text)
                 if not valid:
@@ -820,7 +809,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
                 state["data"][prev_key] = value
             elif prev_key == "restrictions":
-                # Для ограничений валидация не нужна, принимаем любой текст
+                # для ограничений валидация не нужна, принимаем любой текст
                 restrictions = text if text.lower() not in ["нет", "no", "-"] else None
                 state["data"][prev_key] = restrictions
             elif prev_key == "schedule":
@@ -834,7 +823,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             logger.debug(f"After validation - state[data]: {state['data']}")
         
-        # Проверяем: есть ли еще вопросы?
+        # проверяем: есть ли еще вопросы?
         if state["step"] <= len(questions):
             idx = state["step"] - 1
             _, qtext = questions[idx]
@@ -844,13 +833,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(qtext)
             return
         
-        # Все вопросы пройдены → переход к выбору уровня подготовки
+        # все вопросы пройдены → переход к выбору уровня подготовки
         logger.debug(f"Survey completed - state[data]: {state['data']}")
         user_states[user_id] = {"mode": "awaiting_level", "step": 0, "data": state["data"]}
         await update.message.reply_text("Выбери свой уровень подготовки:", reply_markup=LEVEL_KEYBOARD)
         return
 
-    # Уровень
+    # уровень
     if state.get("mode") == "awaiting_level":
         logger.debug(f"awaiting_level triggered - text: {text}, state: {state}")
         if text not in LEVEL_CHOICES:
@@ -862,7 +851,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         level = "опытный" if ("Опыт" in text or "🔥" in text) else "начинающий"
         logger.debug(f"Level selected: {level}")
         
-        # Сохраняем уровень и переходим к выбору мышечной группы
+        # сохраняем уровень и переходим к выбору мышечной группы
         user_states[user_id] = {
             "mode": "awaiting_muscle_group", 
             "step": 0, 
@@ -875,7 +864,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Выбор мышечной группы (после уровня, перед генерацией первой программы)
+    # выбор мышечной группы (после уровня, перед генерацией первой программы)
     if state.get("mode") == "awaiting_muscle_group":
         muscle_groups_map = {
             "🦵 Упор на ноги": "ноги",
@@ -892,7 +881,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Сохраняем выбранную группу мышц
+        # сохраняем выбранную группу мышц
         muscle_group = muscle_groups_map[text]
         finished = {**state["data"], "preferred_muscle_group": muscle_group}
         user_states.pop(user_id, None)
