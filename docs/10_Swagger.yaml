@@ -1,0 +1,632 @@
+openapi: 3.0.3
+info:
+  title: GymAiMentor API
+  description: REST API для AI-фитнес ассистента GymAiMentor
+  version: '1.0.0'
+  contact:
+    name: API Support
+    email: support@gymaimentor.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.gymaimentor.com/v1
+    description: Production server
+  - url: https://staging-api.gymaimentor.com/v1
+    description: Staging server
+
+tags:
+  - name: users
+    description: Операции с пользователями
+  - name: programs
+    description: Управление программами тренировок
+  - name: questions
+    description: Вопросы к AI-тренеру
+  - name: history
+    description: История взаимодействий
+
+paths:
+  /users/{user_id}:
+    get:
+      tags: [users]
+      summary: Получить профиль пользователя
+      description: Возвращает полный профиль пользователя с физическими данными
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Уникальный идентификатор пользователя
+      responses:
+        '200':
+          description: Профиль пользователя найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+              example:
+                user_id: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+                physical_data:
+                  name: "Иван Иванов"
+                  gender: "мужской"
+                  age: 25
+                  height: 180
+                  weight: 75.5
+                  goal: 80
+                  restrictions: "нет"
+                  level: "начинающий"
+                  schedule: 3
+                  target: "набор массы"
+                  preferred_muscle_group: "ноги"
+                physical_data_completed: true
+                created_at: "2024-01-15T10:30:00Z"
+                updated_at: "2024-01-15T10:30:00Z"
+        '404':
+          description: Пользователь не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "USER_NOT_FOUND"
+                message: "Пользователь не найден"
+
+    put:
+      tags: [users]
+      summary: Обновить профиль пользователя
+      description: Обновляет физические данные пользователя
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+            example:
+              physical_data:
+                name: "Иван Иванов"
+                gender: "мужской"
+                age: 26
+                height: 180
+                weight: 78.0
+                goal: 82
+                restrictions: "нет"
+                level: "опытный"
+                schedule: 4
+                target: "набор массы"
+                preferred_muscle_group: "спина"
+      responses:
+        '200':
+          description: Профиль успешно обновлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          description: Ошибка валидации данных
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "VALIDATION_ERROR"
+                message: "Возраст должен быть от 10 до 100 лет"
+
+  /users/{user_id}/profile:
+    get:
+      tags: [users]
+      summary: Получить анкету пользователя
+      description: Возвращает форматированный текст анкеты пользователя
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Анкета пользователя
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profile_text:
+                    type: string
+                    description: Форматированный текст анкеты
+              example:
+                profile_text: |
+                  📋 **Твоя анкета:**
+
+                  👤 Имя: Иван Иванов
+                  🏋️‍♂️ Цель: набор массы
+                  ⚧ Пол: мужской
+                  🔢 Возраст: 25 лет
+                  📏 Рост: 180 см
+                  ⚖️ Текущий вес: 75.5 кг
+                  🎯 Желаемый вес: 80 кг
+                  🏋️ Уровень: начинающий
+                  📈 Частота: 3 раз/неделю
+                  💪 Акцент на мышцы: 🦵 Ноги
+                  ⚠️ Ограничения: нет
+
+  /users/{user_id}/programs:
+    post:
+      tags: [programs]
+      summary: Создать программу тренировок
+      description: Генерирует персонализированную программу тренировок с использованием AI
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProgramRequest'
+            example:
+              user_instruction: "Сделай программу с акцентом на ноги"
+              preferred_muscle_group: "ноги"
+      responses:
+        '201':
+          description: Программа успешно создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramResponse'
+              example:
+                program_id: "prog_123456"
+                user_id: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+                program_text: "Иван, лови программу тренировок 💪🏼...\n\n**День 1 — Ноги и ягодицы**\nРазминка: 5-7 минут...\n- Приседания со штангой — 3×12, отдых 90 сек., усилие: умеренно, рекомендуемый вес: ~60 кг\n..."
+                created_at: "2024-01-15T10:35:00Z"
+                metadata:
+                  generation_time: 15.2
+                  model_used: "GigaChat-2-Max"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          description: Превышен лимит запросов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "RATE_LIMIT_EXCEEDED"
+                message: "Превышен лимит в 5 программ в сутки"
+
+    get:
+      tags: [programs]
+      summary: Получить историю программ
+      description: Возвращает список ранее сгенерированных программ пользователя
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+          description: Количество программ для возврата
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Смещение для пагинации
+      responses:
+        '200':
+          description: Список программ
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  programs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProgramResponse'
+                  total:
+                    type: integer
+                    description: Общее количество программ
+              example:
+                programs:
+                  - program_id: "prog_123456"
+                    user_id: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+                    program_text: "Программа тренировок..."
+                    created_at: "2024-01-15T10:35:00Z"
+                total: 1
+
+  /users/{user_id}/programs/last:
+    get:
+      tags: [programs]
+      summary: Получить последнюю программу
+      description: Возвращает последнюю сгенерированную программу пользователя
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Последняя программа найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramResponse'
+        '404':
+          description: Программа не найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "PROGRAM_NOT_FOUND"
+                message: "У пользователя нет сгенерированных программ"
+
+  /users/{user_id}/questions:
+    post:
+      tags: [questions]
+      summary: Задать вопрос AI-тренеру
+      description: Отправляет вопрос AI-тренеру и получает структурированный ответ
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuestionRequest'
+            example:
+              question: "Как правильно делать приседания?"
+              context: "У меня болит колено"
+      responses:
+        '200':
+          description: Ответ получен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnswerResponse'
+              example:
+                answer_id: "ans_789012"
+                user_id: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+                question: "Как правильно делать приседания?"
+                answer: "**Техника приседаний:**\n\n1. **Исходное положение:**...\n2. **Опускание:**...\n3. **Подъем:**...\n\n**При боли в колене:**...\n\n**Рекомендуемый вес:** ~40-50 кг"
+                created_at: "2024-01-15T10:40:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          description: Превышен лимит запросов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users/{user_id}/history:
+    get:
+      tags: [history]
+      summary: Получить историю взаимодействий
+      description: Возвращает историю всех взаимодействий пользователя с AI-тренером
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Количество записей для возврата
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Смещение для пагинации
+      responses:
+        '200':
+          description: История взаимодействий
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  history:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HistoryItem'
+                  total:
+                    type: integer
+                    description: Общее количество записей
+              example:
+                history:
+                  - timestamp: "2024-01-15T10:35:00Z"
+                    type: "program_generation"
+                    user_input: "🧍 Запрос программы"
+                    ai_response: "🤖 Программа тренировок..."
+                  - timestamp: "2024-01-15T10:40:00Z"
+                    type: "question"
+                    user_input: "🧍 Как правильно делать приседания?"
+                    ai_response: "🤖 **Техника приседаний:**..."
+                total: 2
+
+components:
+  schemas:
+    UserProfile:
+      type: object
+      required: [user_id, physical_data, created_at]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: Уникальный идентификатор пользователя
+        physical_data:
+          type: object
+          properties:
+            name:
+              type: string
+              description: Имя пользователя
+            gender:
+              type: string
+              enum: [мужской, женский]
+              description: Пол пользователя
+            age:
+              type: integer
+              minimum: 10
+              maximum: 100
+              description: Возраст в годах
+            height:
+              type: integer
+              minimum: 100
+              maximum: 250
+              description: Рост в сантиметрах
+            weight:
+              type: number
+              format: float
+              minimum: 30
+              maximum: 300
+              description: Вес в килограммах
+            goal:
+              type: number
+              format: float
+              description: Желаемый вес в килограммах
+            restrictions:
+              type: string
+              description: Ограничения по здоровью
+            level:
+              type: string
+              enum: [начинающий, опытный]
+              description: Уровень подготовки
+            schedule:
+              type: integer
+              minimum: 1
+              maximum: 7
+              description: Частота тренировок в неделю
+            target:
+              type: string
+              enum: [похудение, набор массы, поддержание формы]
+              description: Цель тренировок
+            preferred_muscle_group:
+              type: string
+              enum: [ноги, ягодицы, спина, плечи и руки, сбалансированно]
+              description: Предпочитаемая группа мышц для акцента
+        physical_data_completed:
+          type: boolean
+          description: Заполнена ли анкета полностью
+        created_at:
+          type: string
+          format: date-time
+          description: Время создания профиля
+        updated_at:
+          type: string
+          format: date-time
+          description: Время последнего обновления
+
+    UserUpdateRequest:
+      type: object
+      properties:
+        physical_data:
+          type: object
+          properties:
+            name:
+              type: string
+              maxLength: 80
+            gender:
+              type: string
+              enum: [мужской, женский]
+            age:
+              type: integer
+              minimum: 10
+              maximum: 100
+            height:
+              type: integer
+              minimum: 100
+              maximum: 250
+            weight:
+              type: number
+              format: float
+              minimum: 30
+              maximum: 300
+            goal:
+              type: number
+              format: float
+            restrictions:
+              type: string
+              maxLength: 500
+            level:
+              type: string
+              enum: [начинающий, опытный]
+            schedule:
+              type: integer
+              minimum: 1
+              maximum: 7
+            target:
+              type: string
+              enum: [похудение, набор массы, поддержание формы]
+            preferred_muscle_group:
+              type: string
+              enum: [ноги, ягодицы, спина, плечи и руки, сбалансированно]
+
+    ProgramRequest:
+      type: object
+      required: [user_instruction]
+      properties:
+        user_instruction:
+          type: string
+          maxLength: 1000
+          description: Дополнительные пожелания к программе
+        preferred_muscle_group:
+          type: string
+          enum: [ноги, ягодицы, спина, плечи и руки, сбалансированно]
+          description: Предпочитаемая группа мышц для акцента
+
+    ProgramResponse:
+      type: object
+      required: [program_id, user_id, program_text, created_at]
+      properties:
+        program_id:
+          type: string
+          description: Уникальный идентификатор программы
+        user_id:
+          type: string
+          format: uuid
+          description: Идентификатор пользователя
+        program_text:
+          type: string
+          description: Текст программы тренировок в формате Markdown
+        created_at:
+          type: string
+          format: date-time
+          description: Время создания программы
+        metadata:
+          type: object
+          properties:
+            generation_time:
+              type: number
+              format: float
+              description: Время генерации в секундах
+            model_used:
+              type: string
+              description: Использованная модель AI
+
+    QuestionRequest:
+      type: object
+      required: [question]
+      properties:
+        question:
+          type: string
+          maxLength: 2000
+          description: Текст вопроса
+        context:
+          type: string
+          maxLength: 1000
+          description: Контекст вопроса
+
+    AnswerResponse:
+      type: object
+      required: [answer_id, user_id, question, answer, created_at]
+      properties:
+        answer_id:
+          type: string
+          description: Уникальный идентификатор ответа
+        user_id:
+          type: string
+          format: uuid
+          description: Идентификатор пользователя
+        question:
+          type: string
+          description: Текст вопроса
+        answer:
+          type: string
+          description: Текст ответа в формате Markdown
+        created_at:
+          type: string
+          format: date-time
+          description: Время создания ответа
+
+    HistoryItem:
+      type: object
+      required: [timestamp, type, user_input, ai_response]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Время взаимодействия
+        type:
+          type: string
+          enum: [program_generation, question, profile_update]
+          description: Тип взаимодействия
+        user_input:
+          type: string
+          description: Ввод пользователя
+        ai_response:
+          type: string
+          description: Ответ AI-тренера
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Код ошибки
+        message:
+          type: string
+          description: Описание ошибки
+        details:
+          type: object
+          description: Дополнительные детали ошибки
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "VALIDATION_ERROR"
+            message: "Некорректные данные в запросе"
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT токен для аутентификации
+
+security:
+  - BearerAuth: []
